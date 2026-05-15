@@ -58,6 +58,13 @@ local default_settings = T{
     keep_dead_after_respawn = 30,
     track_respawns          = true,
     respawn_lines           = true,
+    -- NMs auto-detected via the kill chat message ("Spiny Spipi falls to the
+    -- ground" -- no "The " article = NM). `nms[name] = true` is the persistent
+    -- flag; `nm_kills[name] = {count, first, last, last_zone}` is the counter.
+    -- NMs are tracked here instead of the regular respawn table because their
+    -- spawn model (lottery/window/force-pop) doesn't fit a fixed timer.
+    nms                     = T{},
+    nm_kills                = T{},
     -- (legacy `respawn_lines_show_all` intentionally NOT in defaults -- its
     -- presence in a loaded XML is the signal that the user predates v0.2.0
     -- and needs the arc_show_below_pct migration.)
@@ -295,6 +302,9 @@ end
 
 local function record_kill(name, x, y, z)
     if is_ignored(name) then return end
+    -- NMs are tracked in the NM counter table, not the respawn list.
+    -- Skip silently here; the text_in handler is the source of truth for NM kills.
+    if config.nms[name] then return end
     local t = now()
     local window = get_respawn_window(name)
     table.insert(kills, {
@@ -307,6 +317,71 @@ local function record_kill(name, x, y, z)
         z          = z,
     })
     say(('%s killed -- respawn in %s'):format(name, fmt_eta(window)))
+end
+
+-- NM kill recorder. Bumps the counter, marks the name as a known NM so
+-- subsequent kills bypass the respawn list entirely. Also retroactively
+-- removes any stale `kills` entry the entity-scanner queued for this
+-- mob in the last 10 seconds: chat lags entity-scan by ~0.5-1s, so the
+-- very first kill of a brand-new NM gets recorded as a respawn before
+-- chat fires. This cleanup turns that race into self-correction.
+local function record_nm_kill(name)
+    if not name or name == '' then return end
+    if is_ignored(name) then return end
+
+    local first_time = not config.nms[name]
+    config.nms[name] = true
+
+    local t_now = now()
+    local rec = config.nm_kills[name] or T{ count = 0, first = t_now, last = 0, last_zone = 0 }
+    rec.count     = (rec.count or 0) + 1
+    rec.first     = rec.first or t_now
+    rec.last      = t_now
+    rec.last_zone = get_zone_id()
+    config.nm_kills[name] = rec
+
+    -- Sweep any respawn-table entry for this name from the last 10s.
+    -- Entity-scan races chat-parse on the first-ever NM kill.
+    local kept = T{}
+    for _, k in ipairs(kills) do
+        if not (k.name == name and (t_now - k.killed_at) <= 10) then
+            table.insert(kept, k)
+        end
+    end
+    kills = kept
+
+    save()
+    if first_time then
+        say(('%s flagged as NM (kill #%d). Now tracked in nms tab.'):format(name, rec.count))
+    else
+        say(('%s (NM) killed -- now at %d kill%s'):format(name, rec.count, rec.count == 1 and '' or 's'))
+    end
+end
+
+-- Match a kill message and return the bare mob name. NM kill messages in
+-- FFXI omit the "The " article (e.g. "Spiny Spipi falls to the ground.")
+-- while trash kill messages keep it ("The Spipi falls..."). This is the
+-- canonical server-side NM signal that survives translation between message
+-- variants. Returns nil if the line isn't a kill message OR the name has
+-- a "The "/"the " prefix (= regular mob).
+local function parse_nm_kill_message(text)
+    if not text or text == '' then return nil end
+    -- Strip Ashita's leading color/control bytes (typically 0x1E/0x1F prefix
+    -- with optional trailing bytes). Don't try to clean inline codes -- the
+    -- mob name itself can't contain control bytes, so a leading trim is
+    -- enough for "<name> falls to the ground".
+    local s = text:gsub('^[%z\1-\31]+', '')
+    -- "<Mob> falls to the ground." is the universal death notification in
+    -- FFXI -- fires once per kill regardless of who landed the killing
+    -- blow. NM names omit the "The " article ("Spiny Spipi falls...") while
+    -- trash keeps it ("The Spipi falls...") -- canonical NM signal.
+    local name = s:match('^(.-) falls to the ground')
+    if not name or name == '' then return nil end
+    name = name:gsub('^%s+', ''):gsub('%s+$', '')
+    if name == '' then return nil end
+    -- Reject articled names (trash mobs).
+    if name:sub(1, 4):lower() == 'the ' then return nil end
+    return name
 end
 
 -- Last claim_id we successfully matched against a party/alliance member.
@@ -991,12 +1066,76 @@ local function draw_kills_tab()
 end
 
 ----------------------------------------------------------------
+-- nms tab: persistent per-NM kill counter. Sorted by most recently
+-- killed first. Each row: name, count, "Xm ago" since last, zone.
+-- Right-click a row for a context menu (reset count / forget NM).
+----------------------------------------------------------------
+local function fmt_since(secs)
+    if secs < 60 then return ('%ds ago'):format(secs) end
+    if secs < 3600 then return ('%dm ago'):format(math.floor(secs / 60)) end
+    if secs < 86400 then
+        return ('%dh%dm ago'):format(math.floor(secs / 3600), math.floor((secs % 3600) / 60))
+    end
+    return ('%dd ago'):format(math.floor(secs / 86400))
+end
+
+local function draw_nms_tab()
+    -- Snapshot to a sortable array. Pairs() order isn't stable across
+    -- save/reload, so we always re-sort on draw.
+    local rows = {}
+    for name, rec in pairs(config.nm_kills) do
+        table.insert(rows, {
+            name      = name,
+            count     = rec.count or 0,
+            first     = rec.first or 0,
+            last      = rec.last or 0,
+            last_zone = rec.last_zone or 0,
+        })
+    end
+    if #rows == 0 then
+        imgui.TextDisabled('No NMs killed yet.')
+        imgui.TextDisabled('Auto-detected from kill messages.')
+        return
+    end
+    table.sort(rows, function(a, b) return a.last > b.last end)
+
+    local t_now = now()
+    for _, r in ipairs(rows) do
+        local since = t_now - r.last
+        local zname = (r.last_zone > 0) and get_zone_name(r.last_zone) or ''
+        -- Compact line: "Spiny Spipi  x3   12m ago  East Sarutabaruta"
+        imgui.Text(('%s  x%d'):format(r.name, r.count))
+        imgui.SameLine()
+        imgui.TextDisabled(('%s  %s'):format(fmt_since(since), zname))
+
+        -- Right-click context menu, keyed per row so it doesn't open for
+        -- the whole tab. ID stem is `##nmctx_<name>` for uniqueness.
+        if imgui.BeginPopupContextItem('##nmctx_' .. r.name) then
+            if imgui.MenuItem('reset count') then
+                config.nm_kills[r.name] = nil
+                save()
+            end
+            if imgui.MenuItem('forget (un-flag as NM)') then
+                config.nms[r.name] = nil
+                config.nm_kills[r.name] = nil
+                save()
+            end
+            imgui.EndPopup()
+        end
+    end
+end
+
+----------------------------------------------------------------
 -- top-level: tab bar
 ----------------------------------------------------------------
 local function draw_respawn_body()
     if imgui.BeginTabBar('dc_tabs') then
         if imgui.BeginTabItem('kills') then
             draw_kills_tab()
+            imgui.EndTabItem()
+        end
+        if imgui.BeginTabItem('nms') then
+            draw_nms_tab()
             imgui.EndTabItem()
         end
         if imgui.BeginTabItem('config') then
@@ -1039,6 +1178,18 @@ ashita.events.register('d3d_present', 'dc_present_cb', function()
         end
     end
     draw_window()
+end)
+
+-- NM kill auto-detector. Hooks the chat stream and watches for the
+-- universal "<Mob> falls to the ground." line. Names without "The " are
+-- NMs (server-side naming convention). Wrapped in pcall because text_in
+-- runs on every chat line: a regex error here would unload the addon.
+ashita.events.register('text_in', 'dc_nm_text_cb', function(e)
+    if not config.track_respawns then return end
+    pcall(function()
+        local name = parse_nm_kill_message(e.message)
+        if name then record_nm_kill(name) end
+    end)
 end)
 
 -- Yellow-tier return-arcs: when a kill enters its last 60s before respawn
@@ -1247,6 +1398,7 @@ local function help()
     say('/dc list | clear [Name] | add "Name" <s> | default <s>')
     say('/dc ignore [Name] | unignore [Name]')
     say('/dc lines | mine | all | test')
+    say('/dc nm [list|reset <name>|forget <name>] -- NM counter')
     say('alias: /rt <subcmd>')
 end
 
@@ -1287,6 +1439,55 @@ local function handle(args, raw, prefix_word_count)
             strip = strip + #args[i] + 1
         end
         cmd_unignore(raw:sub(strip + 1))
+    elseif sub == 'nm' then
+        local action = args[prefix_word_count + 2]
+        action = action and action:lower() or 'list'
+        if action == 'list' then
+            local n = 0
+            for _ in pairs(config.nm_kills) do n = n + 1 end
+            if n == 0 then
+                say('no NMs tracked yet')
+            else
+                say(('tracked NMs (%d):'):format(n))
+                for name, rec in pairs(config.nm_kills) do
+                    local since = now() - (rec.last or 0)
+                    say(('  %s  x%d  (%s)'):format(name, rec.count or 0, fmt_since(since)))
+                end
+            end
+        elseif action == 'reset' then
+            -- /dc nm reset <name>  or  /dc nm reset all
+            local rest_start = 0
+            for i = 1, prefix_word_count + 2 do
+                rest_start = rest_start + #args[i] + 1
+            end
+            local target = raw:sub(rest_start + 1):gsub('^%s+', ''):gsub('%s+$', '')
+            if target == '' or target:lower() == 'all' then
+                config.nm_kills = T{}; save(); say('all NM counts reset')
+            else
+                if config.nm_kills[target] then
+                    config.nm_kills[target] = nil; save()
+                    say(('reset NM count for %s'):format(target))
+                else
+                    say(('no NM record for "%s" -- check spelling, names are case-sensitive'):format(target))
+                end
+            end
+        elseif action == 'forget' then
+            local rest_start = 0
+            for i = 1, prefix_word_count + 2 do
+                rest_start = rest_start + #args[i] + 1
+            end
+            local target = raw:sub(rest_start + 1):gsub('^%s+', ''):gsub('%s+$', '')
+            if target == '' then
+                say('usage: /dc nm forget <name>')
+            else
+                config.nms[target] = nil
+                config.nm_kills[target] = nil
+                save()
+                say(('un-flagged %s as NM'):format(target))
+            end
+        else
+            say('/dc nm list | reset [name|all] | forget <name>')
+        end
     elseif sub == 'test' then
         record_kill('TestMob')
     elseif sub == 'lines' then
