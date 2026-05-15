@@ -15,6 +15,7 @@ Extracted from [huntpartner](https://github.com/TreeFidyDad/huntpartner) v0.7.93
 - **Predicts respawn** using a configurable default window (349s — based on observed claim-mob respawns; tune for your server) and per-name overrides.
 - **Color-tiered ETA bars** — fully configurable. By default: 6 bands from "Fresh Kill" red through orange / yellow / green / cyan / white at pop.
 - **NMs tab** — auto-detects Notorious Monster kills from the death chat (FFXI omits the "The " article for NMs) and keeps a persistent kill counter with ToD per mob. Once flagged, NMs are excluded from the respawn list (window/lottery spawns don't fit a fixed timer model).
+- **Placeholder learning** — records the server-side spawn slot (server_id) of every kill, so once the addon has seen the same slot host both an NM and a non-NM, it knows that non-NM is the NM's placeholder. PH kills then get a `[PH]` tag on the kills tab, a chat callout (`[PH for Spiny Spipi]`), and tooltip naming the NM. Use `/dc target` to inspect a live target's slot history *before* you swing.
 - **3D return-arcs** drawn in-world from your character to each death spot, colored by the same 5-band palette so a glance at the screen tells you what's about to pop (vendored from [`targetlines`](https://github.com/RolandJ/targetlines)).
 - **Floating mob labels** that ride the apex of each return-arc so you can identify which line goes to which corpse — even when you've kited halfway across the zone.
 - **"Keep pop visible"** window — kills stay in the list for N seconds after they pop so you have time to actually look at them.
@@ -41,6 +42,12 @@ Live mob list with ETA bars, direction + yalms to corpse, single-click clear.
 Auto-populated kill counter for Notorious Monsters with ToD timestamp. Right-click a row to reset the counter or un-flag the mob.
 
 ![nms](assets/nms.png)
+
+### Placeholder learning
+
+Same kills tab, but now slot `0x01074130` has been observed hosting Spiny Spipi — so the third Crawler row (the one at that slot) is tagged `[PH]`. Hover for the NM name; identical-name mobs at *other* slots stay untagged.
+
+![placeholders](assets/placeholders.png)
 
 ### Return arcs + labels in-world
 
@@ -78,6 +85,12 @@ deathclock is **fully standalone**. Its 3D-line machinery (`drawArc`, world-to-s
 /dc nm add <Name>            manually flag a mob as NM (sweeps it from kills tab)
 /dc nm reset <Name|all>      reset kill counter for one NM, or all
 /dc nm forget <Name>         un-flag a mob as NM (so it goes back to the respawn list)
+/dc target                   inspect current target: name, server_id, slot history (NM/PH evidence)
+/dc slots                    summary of slots with PH evidence (slot has hosted both an NM and a non-NM)
+/dc slots verbose            full dump of every slot observed + per-name kill counts
+/dc slots tag <id> <Name>    manually seed a slot/NM pair (accepts decimal or 0xHEX server_id)
+/dc slots clear              wipe slot_map (start placeholder learning over)
+/dc mobdb                    toggle mobdb integration (auto-detect Notorious via its data files)
 /dc test                     drop a TestMob entry to verify rendering
 /dc diag                     dump last label-render error (if any)
 /rt <subcmd>                 short alias for /dc <subcmd>
