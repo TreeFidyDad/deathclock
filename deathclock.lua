@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.14'
+addon.version   = '0.3.15'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -259,6 +259,9 @@ end
 -- RESPAWN TRACKER
 ----------------------------------------------------------------
 local kills    = T{}
+-- Last error caught from arc-label rendering. Printed once per unique error
+-- by the label block; surfaces via `/dc diag` for cold inspection.
+local last_label_err
 local last_hpp = T{}
 local last_scan = 0
 -- Session-only ignore set, keyed by lowercase name. Deliberately not
@@ -956,25 +959,26 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                 -- silently no-ops. The overlay window pattern works on every
                 -- ImGui binding and inherits the addon's font for free.
                 if config.arc_labels and tl_helpers and d3d8dev and d3dC then
-                    local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
-                    local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
-                    local sx, sy, sz = tl_helpers.worldToScreen(k.x, k.y, k.z, view, proj)
-                    if sx and sz and sz > 0 and sz < 1 then
-                        local label = (eta <= 0)
-                            and ('%s  READY'):format(k.name)
-                            or  ('%s  %s'):format(k.name, fmt_eta(math.floor(eta)))
-                        -- Window flags: 1 NoTitleBar | 2 NoResize | 4 NoMove
-                        --   | 8 NoScrollbar | 64 AlwaysAutoResize
-                        --   | 128 NoBackground | 256 NoSavedSettings
-                        --   | 512 NoInputs | 4096 NoFocusOnAppearing
-                        --   | 8192 NoBringToFrontOnFocus = 13263
-                        local FLAGS  = 13263
-                        local wid    = ('##dclbl_%d_%s'):format(k.killed_at or 0, k.name or '')
-                        imgui.SetNextWindowPos({ sx + 6, sy - 8 })
-                        if imgui.Begin(wid, true, FLAGS) then
-                            imgui.TextColored({ rgb[1], rgb[2], rgb[3], 1.0 }, label)
+                    local ok, err = pcall(function()
+                        local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
+                        local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
+                        local sx, sy, sz = tl_helpers.worldToScreen(k.x, k.y, k.z, view, proj)
+                        if sx and sz and sz > 0 and sz < 1 then
+                            local label = (eta <= 0)
+                                and ('%s  READY'):format(k.name)
+                                or  ('%s  %s'):format(k.name, fmt_eta(math.floor(eta)))
+                            local FLAGS  = 13263
+                            local wid    = ('##dclbl_%d_%s'):format(k.killed_at or 0, k.name or '')
+                            imgui.SetNextWindowPos({ sx + 6, sy - 8 })
+                            if imgui.Begin(wid, true, FLAGS) then
+                                imgui.TextColored({ rgb[1], rgb[2], rgb[3], 1.0 }, label)
+                            end
+                            imgui.End()
                         end
-                        imgui.End()
+                    end)
+                    if not ok and err ~= last_label_err then
+                        last_label_err = err
+                        print(chat.header('dc'):append(chat.error('label err: ' .. tostring(err))))
                     end
                 end
             end
@@ -1123,6 +1127,21 @@ local function handle(args, raw, prefix_word_count)
         end
         save()
         say(('arcs visible above: %d%% elapsed'):format(config.arc_show_above_elapsed_pct))
+    elseif sub == 'diag' then
+        say(('drawArc=%s tl_helpers=%s d3d8dev=%s d3dC=%s'):format(
+            tostring(drawArc ~= nil), tostring(tl_helpers ~= nil),
+            tostring(d3d8dev ~= nil), tostring(d3dC ~= nil)))
+        say(('arc_labels=%s respawn_lines=%s track=%s'):format(
+            tostring(config.arc_labels), tostring(config.respawn_lines),
+            tostring(config.track_respawns)))
+        local cur_zone = get_zone_id()
+        local n_total, n_zone = 0, 0
+        for _, k in ipairs(kills) do
+            n_total = n_total + 1
+            if k.zone == cur_zone and k.x and k.y and k.z then n_zone = n_zone + 1 end
+        end
+        say(('kills: %d total, %d in this zone with positions'):format(n_total, n_zone))
+        say(('last label err: %s'):format(tostring(last_label_err)))
     elseif sub == 'help' then
         help()
     else
