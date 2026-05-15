@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.21'
+addon.version   = '0.3.22'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -304,19 +304,31 @@ local function record_kill(name, x, y, z)
     say(('%s killed -- respawn in %s'):format(name, fmt_eta(window)))
 end
 
+-- Last claim_id we successfully matched against a party/alliance member.
+-- Surfaced via /dc diag so when the filter eats a kill that should have
+-- counted, we can compare the seen claim_id to what GetMemberServerId
+-- returned (most common drift: 16- vs 32-bit comparison).
+local last_seen_claim = 0
+local last_seen_player_sid = 0
+local last_filter_skip = nil
+
 -- True when claim_id (low 16 bits of GetClaimStatus) belongs to me or to
 -- anyone in my party/alliance. Loops 0..17 to cover all 3 alliance parties
--- (18 slots total, matching hpui's pattern). Returns true when claim_id is
--- zero only if the caller asks for it (deliberately: unclaimed deaths
--- aren't "mine"). Wrapped because the Ashita API can throw on torn reads
+-- (18 slots total, matching hpui's pattern). Both sides masked to 16 bits
+-- because claim_id is the low 16 of the claimer's 32-bit server ID --
+-- comparing without the mask never matches for entities whose high bits
+-- are non-zero. Wrapped because the Ashita API can throw on torn reads
 -- around zoning.
 local function claim_is_mine(claim_id)
     if not claim_id or claim_id == 0 then return false end
+    local target = bit.band(claim_id, 0xFFFF)
     local ok, result = pcall(function()
         local party = AshitaCore:GetMemoryManager():GetParty()
         for i = 0, 17 do
             if party:GetMemberIsActive(i) == 1 then
-                if party:GetMemberServerId(i) == claim_id then
+                local sid = party:GetMemberServerId(i)
+                if sid and bit.band(sid, 0xFFFF) == target then
+                    if i == 0 then last_seen_player_sid = sid end
                     return true
                 end
             end
@@ -348,6 +360,7 @@ local function scan_for_deaths()
                 -- the death frame itself). Fall back to current claim if
                 -- prev wasn't sampled yet (first-seen-dying edge case).
                 local credit_claim = last_claim[i] or cur_claim or 0
+                last_seen_claim = credit_claim
                 local mine = claim_is_mine(credit_claim)
                 if (not config.only_my_kills) or mine then
                     local x, y, z
@@ -357,6 +370,8 @@ local function scan_for_deaths()
                         z = entities:GetLocalPositionZ(i)
                     end)
                     record_kill(name, x, y, z)
+                else
+                    last_filter_skip = ('%s claim=0x%x'):format(name, credit_claim)
                 end
             end
             last_hpp[i] = hpp
@@ -1237,6 +1252,18 @@ local function handle(args, raw, prefix_word_count)
         end
         say(('kills: %d total, %d in this zone with positions'):format(n_total, n_zone))
         say(('last label err: %s'):format(tostring(last_label_err)))
+        -- Claim-filter diagnostics: shows whether GetClaimStatus and
+        -- GetMemberServerId are giving comparable values. If a kill should
+        -- have counted but didn't, compare last_seen_claim against your
+        -- own server ID's low 16 bits.
+        local my_sid = 0
+        pcall(function()
+            my_sid = AshitaCore:GetMemoryManager():GetParty():GetMemberServerId(0) or 0
+        end)
+        say(('only_my_kills=%s my_sid=0x%x (low16=0x%x)'):format(
+            tostring(config.only_my_kills), my_sid, bit.band(my_sid, 0xFFFF)))
+        say(('last claim seen at death: 0x%x  last skip: %s'):format(
+            last_seen_claim, tostring(last_filter_skip)))
     elseif sub == 'help' then
         help()
     else
