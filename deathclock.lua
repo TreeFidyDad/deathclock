@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.2.0'
+addon.version   = '0.2.1'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -46,31 +46,34 @@ local default_settings = T{
     -- presence in a loaded XML is the signal that the user predates v0.2.0
     -- and needs the arc_show_below_pct migration.)
 
-    -- Color bands run high-%-remaining → low. Blue = just died, Red = about
-    -- to pop. "ready" is its own band (eta <= 0) so green-means-go survives.
+    -- Color bands keyed by % ELAPSED of the respawn window. Red = freshly
+    -- killed (cooling corpse), bands cool through orange/yellow/green/blue
+    -- as the timer matures, then purple at ready (eta <= 0) for "pop time."
+    -- Thermometer-inverted-into-spectral, very FFXI-flavored.
     -- ImGui RGB floats 0-1. Alpha is not user-editable: bars use 1.0, arcs
     -- use 0.75 to read over terrain without becoming a blinding overlay.
     colors = T{
-        ready  = T{ 0.27, 1.00, 0.27 },
-        blue   = T{ 0.35, 0.55, 1.00 },
-        green  = T{ 0.40, 0.85, 0.55 },
-        yellow = T{ 1.00, 0.93, 0.27 },
-        orange = T{ 1.00, 0.60, 0.20 },
         red    = T{ 1.00, 0.33, 0.33 },
+        orange = T{ 1.00, 0.60, 0.20 },
+        yellow = T{ 1.00, 0.93, 0.27 },
+        green  = T{ 0.40, 0.85, 0.55 },
+        blue   = T{ 0.35, 0.55, 1.00 },
+        purple = T{ 0.80, 0.40, 1.00 },
     },
-    -- Thresholds are the LOWER bound (% of total respawn remaining) for each
-    -- band. Going down: > blue → blue, > green → green, ..., otherwise red.
-    -- Must stay monotonically decreasing; clamped on slider edit.
+    -- Thresholds are the LOWER bound (% of total respawn ELAPSED) for each
+    -- band. Going up: >= blue → blue, >= green → green, ..., otherwise red.
+    -- Must stay monotonically increasing; clamped on slider edit. Red is
+    -- the floor (no slider), purple is eta<=0 (no slider).
     thresholds = T{
-        blue   = 75,
-        green  = 50,
-        yellow = 25,
-        orange = 10,
+        orange = 20,
+        yellow = 40,
+        green  = 60,
+        blue   = 80,
     },
-    -- In-world arcs render only when remaining % <= this. 100 = always,
-    -- 0 = never (use the on/off toggle for that). Replaces the old binary
-    -- "show all" toggle with a continuous knob.
-    arc_show_below_pct = 100,
+    -- In-world arcs render only when pct ELAPSED >= this. 0 = always,
+    -- 100 = never (use the on/off toggle for that). A higher value hides
+    -- arcs for fresh kills and reveals them as the timer matures.
+    arc_show_above_elapsed_pct = 0,
 }
 
 local config = settings.load(default_settings)
@@ -84,15 +87,54 @@ if config.default_respawn == 300 or config.default_respawn == 345 then
 end
 
 -- v0.2.0 migration: legacy boolean `respawn_lines_show_all` becomes the
--- continuous `arc_show_below_pct`. False (the old default) meant "only
--- green and yellow arcs" — yellow was eta<=60s, ~17% remaining for a 349s
--- timer. Map false → 25 (a touch more permissive than the old yellow line
--- so users don't feel they lost arcs), true → 100 (always show).
--- Sentinel prevents re-applying this if the user later lowers the value to 0.
+-- continuous `arc_show_above_elapsed_pct` (was briefly `arc_show_below_pct`
+-- in v0.2.0). False (the old default) meant "only green and yellow arcs"
+-- — yellow was eta<=60s, roughly the last 20% of a 349s timer. Map false →
+-- show only when elapsed >= 80 (last fifth), true → 0 (always show).
+-- Sentinel prevents re-applying.
 if not config._arc_pct_migrated then
     config._arc_pct_migrated = true
     if config.respawn_lines_show_all == false then
-        config.arc_show_below_pct = 25
+        config.arc_show_above_elapsed_pct = 80
+    end
+    settings.save()
+end
+
+-- v0.2.1 migration: flipped the color-band axis from %-remaining to
+-- %-elapsed and replaced the "ready" band with "purple". Old v0.2.0 users
+-- have `arc_show_below_pct` (inverse semantics) and a `ready` color but no
+-- `purple`. Translate cleanly: new_above_elapsed = 100 - old_below_remaining;
+-- carry the ready color over as purple if user customized it.
+if not config._v021_axis_flip then
+    config._v021_axis_flip = true
+    if type(config.arc_show_below_pct) == 'number' then
+        config.arc_show_above_elapsed_pct = math.max(0, math.min(100, 100 - config.arc_show_below_pct))
+        config.arc_show_below_pct = nil
+    end
+    if config.colors and config.colors.ready and not (config.colors.purple and config.colors.purple[1]) then
+        config.colors.purple = config.colors.ready
+    end
+    if config.colors then config.colors.ready = nil end
+    -- v0.2.0 thresholds were %-remaining (blue=75, green=50, yellow=25,
+    -- orange=10). Flip to %-elapsed equivalents: 100 - old.
+    if config.thresholds then
+        local th = config.thresholds
+        -- Detect v0.2.0 shape by the presence of blue >= 50 (v0.2.1 default
+        -- blue is 80; v0.2.0 default blue is 75 — both > 50). If the user
+        -- never opened the panel, the values match v0.2.0 defaults and
+        -- need flipping; if they did customize, we still flip because the
+        -- axis itself inverted.
+        local looks_like_v020 = (th.blue or 0) > (th.green or 0)
+            and (th.green or 0) > (th.yellow or 0)
+            and (th.yellow or 0) > (th.orange or 0)
+        if looks_like_v020 then
+            config.thresholds = T{
+                orange = 100 - (th.orange or 10),
+                yellow = 100 - (th.yellow or 25),
+                green  = 100 - (th.green  or 50),
+                blue   = 100 - (th.blue   or 75),
+            }
+        end
     end
     settings.save()
 end
@@ -270,14 +312,22 @@ local function build_respawn_rows()
     return rows
 end
 
+-- Pick the band for a kill based on elapsed fraction of its respawn window.
+-- eta <= 0 → purple (pop time). Otherwise highest threshold whose floor
+-- the elapsed % has crossed. Red is the floor (everything below orange).
 local function color_for(eta, total)
-    if eta <= 0 then return config.colors.ready end
-    local pct = (total and total > 0) and (eta / total * 100) or 100
+    if eta <= 0 then return config.colors.purple end
+    local pct_elapsed
+    if total and total > 0 then
+        pct_elapsed = math.max(0, math.min(100, (total - eta) / total * 100))
+    else
+        pct_elapsed = 0
+    end
     local th = config.thresholds
-    if pct >= th.blue   then return config.colors.blue   end
-    if pct >= th.green  then return config.colors.green  end
-    if pct >= th.yellow then return config.colors.yellow end
-    if pct >= th.orange then return config.colors.orange end
+    if pct_elapsed >= (th.blue   or 80) then return config.colors.blue   end
+    if pct_elapsed >= (th.green  or 60) then return config.colors.green  end
+    if pct_elapsed >= (th.yellow or 40) then return config.colors.yellow end
+    if pct_elapsed >= (th.orange or 20) then return config.colors.orange end
     return config.colors.red
 end
 
@@ -310,40 +360,43 @@ local function draw_respawn_body()
         end
     end
 
-    -- Collapsed by default — most users never open it, but the knobs are
-    -- here for the ones who care. Bands run blue (just died) → red (about
-    -- to pop). "ready" is its own band so green-means-go survives.
+    -- Collapsed by default. Bands run by % ELAPSED of the respawn window:
+    -- red = fresh kill (cooling corpse) → cools through orange/yellow/green
+    -- /blue as time matures → purple at ready (pop time). Click any swatch
+    -- to repaint it however you want — the names are just defaults.
     if imgui.CollapsingHeader('colors & thresholds') then
-        local band_order = { 'ready', 'blue', 'green', 'yellow', 'orange', 'red' }
+        imgui.TextDisabled('click any swatch to pick a color')
+        local band_order = { 'red', 'orange', 'yellow', 'green', 'blue', 'purple' }
         for _, name in ipairs(band_order) do
             local c = config.colors[name]
-            local tmp = { c[1], c[2], c[3] }
-            imgui.PushID('col_' .. name)
-            if imgui.ColorEdit3('##' .. name, tmp) then
-                config.colors[name] = T{ tmp[1], tmp[2], tmp[3] }; save()
+            if c then
+                local tmp = { c[1], c[2], c[3] }
+                imgui.PushID('col_' .. name)
+                if imgui.ColorEdit3('##' .. name, tmp) then
+                    config.colors[name] = T{ tmp[1], tmp[2], tmp[3] }; save()
+                end
+                imgui.PopID()
+                imgui.SameLine()
+                imgui.Text(name)
             end
-            imgui.PopID()
-            imgui.SameLine()
-            imgui.Text(name)
         end
 
         imgui.Separator()
-        imgui.TextDisabled('band kicks in at % remaining')
+        imgui.TextDisabled('band kicks in once % elapsed reaches')
 
         -- Sliders define the LOWER bound for each band, in % of total
-        -- respawn remaining. Must stay monotonically decreasing
-        -- (blue > green > yellow > orange) or the bands lose meaning;
-        -- clamp on edit rather than constrain min/max because clamping
-        -- gives the user a clearer "you hit the floor" signal.
+        -- respawn ELAPSED (0 = just died, 100 = ready). Must stay
+        -- monotonically increasing (orange < yellow < green < blue) or
+        -- the bands collapse. Clamp on edit for clear feedback.
         local th = config.thresholds
         local function clamp_thresholds()
-            if th.green  >= th.blue   then th.green  = th.blue   - 1 end
-            if th.yellow >= th.green  then th.yellow = th.green  - 1 end
-            if th.orange >= th.yellow then th.orange = th.yellow - 1 end
-            if th.orange < 1 then th.orange = 1 end
-            if th.yellow < 2 then th.yellow = 2 end
-            if th.green  < 3 then th.green  = 3 end
-            if th.blue   < 4 then th.blue   = 4 end
+            if th.yellow <= th.orange then th.yellow = th.orange + 1 end
+            if th.green  <= th.yellow then th.green  = th.yellow + 1 end
+            if th.blue   <= th.green  then th.blue   = th.green  + 1 end
+            if th.blue   > 99 then th.blue   = 99 end
+            if th.green  > 98 then th.green  = 98 end
+            if th.yellow > 97 then th.yellow = 97 end
+            if th.orange > 96 then th.orange = 96 end
         end
         local function slider(label, key, lo, hi)
             local v = { th[key] }
@@ -353,31 +406,31 @@ local function draw_respawn_body()
             end
             imgui.PopID()
         end
-        slider('blue',   'blue',   1, 99)
-        slider('green',  'green',  1, 99)
-        slider('yellow', 'yellow', 1, 99)
         slider('orange', 'orange', 1, 99)
+        slider('yellow', 'yellow', 1, 99)
+        slider('green',  'green',  1, 99)
+        slider('blue',   'blue',   1, 99)
 
         if drawArc then
             imgui.Separator()
-            local v = { config.arc_show_below_pct or 100 }
-            if imgui.SliderInt('arcs visible below', v, 0, 100, '%d%%') then
-                config.arc_show_below_pct = v[1]; save()
+            local v = { config.arc_show_above_elapsed_pct or 0 }
+            if imgui.SliderInt('arcs visible above', v, 0, 100, '%d%%') then
+                config.arc_show_above_elapsed_pct = v[1]; save()
             end
-            imgui.TextDisabled('100% = always, 25% = last quarter only')
+            imgui.TextDisabled('0% = always, 75% = only the last quarter')
         end
 
         if imgui.SmallButton('reset colors & thresholds') then
             config.colors = T{
-                ready  = T{ 0.27, 1.00, 0.27 },
-                blue   = T{ 0.35, 0.55, 1.00 },
-                green  = T{ 0.40, 0.85, 0.55 },
-                yellow = T{ 1.00, 0.93, 0.27 },
-                orange = T{ 1.00, 0.60, 0.20 },
                 red    = T{ 1.00, 0.33, 0.33 },
+                orange = T{ 1.00, 0.60, 0.20 },
+                yellow = T{ 1.00, 0.93, 0.27 },
+                green  = T{ 0.40, 0.85, 0.55 },
+                blue   = T{ 0.35, 0.55, 1.00 },
+                purple = T{ 0.80, 0.40, 1.00 },
             }
-            config.thresholds = T{ blue = 75, green = 50, yellow = 25, orange = 10 }
-            config.arc_show_below_pct = 100
+            config.thresholds = T{ orange = 20, yellow = 40, green = 60, blue = 80 }
+            config.arc_show_above_elapsed_pct = 0
             save()
         end
     end
@@ -564,13 +617,18 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
 
         local cur_zone = get_zone_id()
         local t = now()
-        local thr_pct = config.arc_show_below_pct or 100
+        local thr_pct = config.arc_show_above_elapsed_pct or 0
         for _, k in ipairs(kills) do
             if k.zone == cur_zone and k.x and k.y and k.z then
                 local eta = k.respawn_at - t
                 local total = k.respawn_at - (k.killed_at or k.respawn_at)
-                local pct = (total > 0) and math.max(0, eta / total * 100) or 0
-                if eta <= 0 or pct <= thr_pct then
+                local pct_elapsed
+                if total > 0 then
+                    pct_elapsed = math.max(0, math.min(100, (total - eta) / total * 100))
+                else
+                    pct_elapsed = 100
+                end
+                if eta <= 0 or pct_elapsed >= thr_pct then
                     local color = rgb_to_argb(color_for(eta, total))
                     drawArc(px, py, pz, k.x, k.y, k.z, color, 1)
                 end
@@ -712,14 +770,14 @@ local function handle(args, raw, prefix_word_count)
         say(('return arcs: %s'):format(config.respawn_lines and 'on' or 'off'))
     elseif sub == 'all' then
         -- Legacy /dc all → toggle between "show every arc" and "show only
-        -- the last quarter". Maps onto the new continuous arc_show_below_pct.
-        if (config.arc_show_below_pct or 100) >= 100 then
-            config.arc_show_below_pct = 25
+        -- the last quarter". Maps onto the new continuous threshold.
+        if (config.arc_show_above_elapsed_pct or 0) <= 0 then
+            config.arc_show_above_elapsed_pct = 75
         else
-            config.arc_show_below_pct = 100
+            config.arc_show_above_elapsed_pct = 0
         end
         save()
-        say(('arcs visible below: %d%%'):format(config.arc_show_below_pct))
+        say(('arcs visible above: %d%% elapsed'):format(config.arc_show_above_elapsed_pct))
     elseif sub == 'help' then
         help()
     else

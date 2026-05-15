@@ -23,7 +23,7 @@ FFXI respawn timer + 3D return-arc HUD for HorizonXI, extracted from huntpartner
 /dc ignore [Name]            mute this mob for the session
 /dc unignore [Name]          unmute
 /dc lines                    toggle 3D return-arcs
-/dc all                      toggle arc-visibility threshold between 100% and 25%
+/dc all                      toggle arc-visibility threshold between 0% and 75% elapsed
 /dc test                     drop a TestMob entry to verify rendering
 /rt <subcmd>                 alias for /dc <subcmd>
 ```
