@@ -1,10 +1,10 @@
 # deathclock
 
-An [Ashita v4](https://www.ashitaxi.com/) addon for [HorizonXI](https://www.horizonxi.com/) that tells you, at a glance, **when each mob you killed is about to repop and where its corpse landed**.
+An [Ashita v4](https://www.ashitaxi.com/) addon for FFXI that tells you, at a glance, **when each mob you killed is about to repop and where its corpse landed**.
 
 Extracted from [huntpartner](https://github.com/TreeFidyDad/huntpartner) v0.7.93 so respawn tracking can be reloaded independently of the rest of huntpartner's surface area.
 
-> ⚠️ Built and tested for HorizonXI. Respawn windows and entity behavior differ from retail / other private servers — YMMV.
+> ⚠️ Respawn windows and entity behavior differ between servers — YMMV. Tune the defaults for your environment.
 
 ---
 
@@ -12,7 +12,7 @@ Extracted from [huntpartner](https://github.com/TreeFidyDad/huntpartner) v0.7.93
 
 - **Tracks mob deaths** via HPP-scan — no packet hooks, no chat scrape. It watches the entity table for HP `0` with a previous non-zero, on mob entities only.
 - **Only your kills** — by default, only mobs claimed by you or your party/alliance at time of death are tracked. Random mobs killed by passers-by don't get added to the list. Toggle in the config tab or with `/dc mine`.
-- **Predicts respawn** using a configurable default window (349s — measured for HorizonXI claim mobs) and per-name overrides.
+- **Predicts respawn** using a configurable default window (349s — based on observed claim-mob respawns; tune for your server) and per-name overrides.
 - **Color-tiered ETA bars** — fully configurable. By default: 6 bands from "Fresh Kill" red through orange / yellow / green / cyan / white at pop.
 - **Urgent banner** for same-zone yellow-tier rows: compass direction + yalms to the death spot, readable even when the attack menu is blocking `/compass`.
 - **3D return-arcs** drawn in-world from your character to each death spot, colored by the same 5-band palette so a glance at the screen tells you what's about to pop (vendored from [`targetlines`](https://github.com/RolandJ/targetlines)).
@@ -109,7 +109,6 @@ huntpartner reloads frequently during development. A single Lua error in any of 
 - Extracted from [huntpartner](https://github.com/TreeFidyDad/huntpartner) v0.7.93.
 - `vendor/targetlines/` (the `drawArc` machinery and `worldToScreen` helper) is vendored from the [`targetlines`](https://github.com/RolandJ/targetlines) addon — see `vendor/targetlines/NOTICE.md` for full attribution.
 - Built with [Claude](https://claude.ai) (as Watney) as a coding partner.
-- Built for and tested on [HorizonXI](https://www.horizonxi.com/).
 
 ---
 
