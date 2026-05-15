@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.9'
+addon.version   = '0.3.10'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -24,6 +24,21 @@ local drawArc
 do
     local ok, mod = pcall(require, 'drawArc')
     if ok then drawArc = mod end
+end
+-- Optional: world->screen helper + d3d8 device for arc labels. Same pcall
+-- discipline -- if any of these fail to load, labels just don't render
+-- and the arc itself keeps working.
+local tl_helpers, d3d8dev, d3dC
+do
+    local ok, mod = pcall(require, 'tl_helpers')
+    if ok then tl_helpers = mod end
+    local ok2, d3d8 = pcall(require, 'd3d8')
+    if ok2 then
+        local okdev, dev = pcall(d3d8.get_device)
+        if okdev then d3d8dev = dev end
+    end
+    local ok3, ffi = pcall(require, 'ffi')
+    if ok3 then d3dC = ffi.C end
 end
 
 ----------------------------------------------------------------
@@ -84,6 +99,10 @@ local default_settings = T{
     -- 100 = never (use the on/off toggle for that). A higher value hides
     -- arcs for fresh kills and reveals them as the timer matures.
     arc_show_above_elapsed_pct = 0,
+    -- Draw the mob name + eta as a floating text label at the death spot,
+    -- following the arc to its endpoint. Off in the rare case the user
+    -- doesn't have d3d8/tl_helpers available (graceful fallback).
+    arc_labels                 = true,
 }
 
 local config = settings.load(default_settings)
@@ -390,6 +409,17 @@ local function rgb_to_argb(c, alpha)
     return a * 0x1000000 + r * 0x10000 + g * 0x100 + b
 end
 
+-- ImGui draw-list packs as IM_COL32 (ABGR little-endian): a<<24|b<<16|g<<8|r.
+-- Different byte order from D3D ARGB; can't reuse rgb_to_argb. Default alpha
+-- is full opacity so labels stay legible against terrain.
+local function rgb_to_imu32(c, alpha)
+    local a = alpha or 0xFF
+    local r = math.floor((c[1] or 0) * 255 + 0.5)
+    local g = math.floor((c[2] or 0) * 255 + 0.5)
+    local b = math.floor((c[3] or 0) * 255 + 0.5)
+    return a * 0x1000000 + b * 0x10000 + g * 0x100 + r
+end
+
 -- Bars use ImGui PushStyleColor which wants {r,g,b,a}. Wrap the RGB triple
 -- with a full-opacity alpha so we don't mutate the stored table.
 local function bar_rgba(c)
@@ -431,6 +461,13 @@ local function draw_config_tab()
         local rl = { config.respawn_lines }
         if imgui.Checkbox('return arcs', rl) then
             config.respawn_lines = rl[1]; save()
+        end
+        if tl_helpers and d3d8dev and d3dC then
+            imgui.SameLine()
+            local al = { config.arc_labels }
+            if imgui.Checkbox('labels', al) then
+                config.arc_labels = al[1]; save()
+            end
         end
         -- Arc visibility threshold. Slider + paired seconds InputInt
         -- (against default respawn) so users can reason in either unit.
@@ -872,8 +909,31 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                     pct_elapsed = 100
                 end
                 if eta <= 0 or pct_elapsed >= thr_pct then
-                    local color = rgb_to_argb(color_for(eta, total))
+                    local rgb   = color_for(eta, total)
+                    local color = rgb_to_argb(rgb)
                     drawArc(px, py, pz, k.x, k.y, k.z, color, 1)
+                    -- Float the mob name + eta over the death point. Project
+                    -- world->screen via the same matrices drawArc uses; skip
+                    -- when behind camera (ndcZ outside [0,1]) so labels don't
+                    -- bleed onto the wrong side of the screen.
+                    if config.arc_labels and tl_helpers and d3d8dev and d3dC then
+                        local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
+                        local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
+                        local sx, sy, sz = tl_helpers.worldToScreen(k.x, k.y, k.z, view, proj)
+                        if sx and sz and sz > 0 and sz < 1 then
+                            local label = (eta <= 0)
+                                and ('%s  READY'):format(k.name)
+                                or  ('%s  %s'):format(k.name, fmt_eta(math.floor(eta)))
+                            local col = rgb_to_imu32(rgb)
+                            local dl  = imgui.GetBackgroundDrawList()
+                            if dl then
+                                -- 1px black drop-shadow for readability over
+                                -- bright terrain. Cheap, no font atlas work.
+                                dl:AddText({ sx + 7, sy - 7 }, 0xFF000000, label)
+                                dl:AddText({ sx + 6, sy - 8 }, col,        label)
+                            end
+                        end
+                    end
                 end
             end
         end
