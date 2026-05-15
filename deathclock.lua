@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.1'
+addon.version   = '0.3.2'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -428,7 +428,25 @@ local function draw_config_tab()
         if imgui.SliderInt('arcs visible above', v, 0, 100, '%d%% elapsed') then
             config.arc_show_above_elapsed_pct = v[1]; save()
         end
-        imgui.TextDisabled('0% = always, 75% = only the last quarter')
+        -- Mirror the slider as "seconds remaining when arc appears" against
+        -- the default respawn timer, so users without a color spectrum can
+        -- still reason about WHEN arcs pop on. Editing either field updates
+        -- the other. Per-mob overrides scale proportionally at draw time.
+        local total = math.max(1, config.default_respawn or 349)
+        local pct   = math.max(0, math.min(100, config.arc_show_above_elapsed_pct or 0))
+        local remaining = math.floor(total * (1 - pct / 100) + 0.5)
+        local rv = { remaining }
+        imgui.PushItemWidth(80)
+        if imgui.InputInt('sec remaining when arc appears', rv, 0, 0) then
+            if rv[1] < 0 then rv[1] = 0 end
+            if rv[1] > total then rv[1] = total end
+            config.arc_show_above_elapsed_pct = math.floor((1 - rv[1] / total) * 100 + 0.5)
+            save()
+        end
+        imgui.PopItemWidth()
+        imgui.SameLine()
+        imgui.TextDisabled(('(%s, vs %s default)'):format(fmt_eta(remaining), fmt_eta(total)))
+        imgui.TextDisabled('0% = always on, 100% = only at pop')
     end
 
     imgui.Separator()
