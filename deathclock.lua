@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.15'
+addon.version   = '0.3.16'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -962,7 +962,13 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                     local ok, err = pcall(function()
                         local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
                         local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
-                        local sx, sy, sz = tl_helpers.worldToScreen(k.x, k.y, k.z, view, proj)
+                        -- Axis swap to match drawArc: Ashita's entity coords
+                        -- are (x=horizontal, y=depth, z=altitude), but D3D's
+                        -- view/projection expect (x, y=altitude, z=depth).
+                        -- drawArc.lua does the same swap internally
+                        -- (`P0x, P0y, P0z = x1, z1, y1`); without it the label
+                        -- projects to a completely wrong world point.
+                        local sx, sy, sz = tl_helpers.worldToScreen(k.x, k.z, k.y, view, proj)
                         if sx and sz and sz > 0 and sz < 1 then
                             local label = (eta <= 0)
                                 and ('%s  READY'):format(k.name)
