@@ -358,6 +358,33 @@ local function record_nm_kill(name)
     end
 end
 
+-- Manual promotion: flag as NM and sweep every kills-tab entry for this name
+-- regardless of age. Used by the GUI "NM" button and `/dc nm add <name>`.
+local function promote_to_nm(name)
+    if not name or name == '' then return 0, false end
+    local t_now = now()
+    local rec = config.nm_kills[name] or T{ count = 0, first = t_now, last = 0, last_zone = 0 }
+    local was_new = not config.nms[name]
+    config.nms[name] = true
+    rec.count     = (rec.count or 0) + 1
+    rec.first     = rec.first or t_now
+    rec.last      = t_now
+    rec.last_zone = get_zone_id()
+    config.nm_kills[name] = rec
+    local removed = 0
+    local kept = T{}
+    for _, k in ipairs(kills) do
+        if k.name == name then
+            removed = removed + 1
+        else
+            table.insert(kept, k)
+        end
+    end
+    kills = kept
+    save()
+    return removed, was_new
+end
+
 -- Match a kill message and return the bare mob name. NM kill messages in
 -- FFXI omit the "The " article (e.g. "Spiny Spipi falls to the ground.")
 -- while trash kill messages keep it ("The Spipi falls..."). This is the
@@ -1016,6 +1043,19 @@ local function draw_kills_tab()
             kills = kept
         end
         imgui.SameLine()
+        if imgui.SmallButton('NM') then
+            local removed, was_new = promote_to_nm(r.name)
+            local rec = config.nm_kills[r.name]
+            if was_new then
+                say(('%s flagged as NM (count=%d)'):format(r.name, rec.count))
+            else
+                say(('%s NM count bumped to %d'):format(r.name, rec.count))
+            end
+        end
+        if imgui.IsItemHovered() then
+            imgui.SetTooltip('Flag as NM and move to NMs tab')
+        end
+        imgui.SameLine()
         if imgui.SmallButton('ign') then
             ignored[r.name:lower()] = r.name
             local kept = T{}
@@ -1089,7 +1129,36 @@ local function fmt_since(secs)
     return ('%dd ago'):format(math.floor(secs / 86400))
 end
 
+-- Module-scoped buffer for the "Add NM" text input. Lives outside
+-- draw_nms_tab so the typed-but-not-submitted text persists across frames.
+local nm_add_buf = { '' }
+
 local function draw_nms_tab()
+    -- Add-by-name row at the top: text input + Add button. Submits on
+    -- Enter (EnterReturnsTrue=32) or button click.
+    imgui.PushItemWidth(180)
+    local submitted = imgui.InputText('##nm_add_name', nm_add_buf, 64, 32)
+    imgui.PopItemWidth()
+    imgui.SameLine()
+    local clicked = imgui.Button('Add NM')
+    if submitted or clicked then
+        local target = (nm_add_buf[1] or ''):gsub('^%s+', ''):gsub('%s+$', '')
+        if target ~= '' then
+            local removed, was_new = promote_to_nm(target)
+            local rec = config.nm_kills[target]
+            if was_new then
+                say(('%s flagged as NM (count=%d, %d stale kill entr%s swept)'):format(
+                    target, rec.count, removed, removed == 1 and 'y' or 'ies'))
+            else
+                say(('%s NM count bumped to %d'):format(target, rec.count))
+            end
+            nm_add_buf[1] = ''
+        end
+    end
+    imgui.SameLine()
+    imgui.TextDisabled('(or click NM on a kills-tab row)')
+    imgui.Separator()
+
     -- Snapshot to a sortable array. Pairs() order isn't stable across
     -- save/reload, so we always re-sort on draw.
     local rows = {}
@@ -1103,18 +1172,35 @@ local function draw_nms_tab()
         })
     end
     if #rows == 0 then
-        imgui.TextDisabled('No NMs killed yet.')
-        imgui.TextDisabled('Auto-detected from kill messages.')
+        imgui.TextDisabled('No NMs tracked yet.')
+        imgui.TextDisabled('Auto-detected from kill messages, or add manually above.')
         return
     end
     table.sort(rows, function(a, b) return a.last > b.last end)
 
     local t_now = now()
-    for _, r in ipairs(rows) do
+    for i, r in ipairs(rows) do
         local since = t_now - r.last
         local zname = (r.last_zone > 0) and get_zone_name(r.last_zone) or ''
         local tod = fmt_tod(r.last)
-        -- Compact line: "Spiny Spipi  x3   ToD 14:32 · 12m ago · East Sarutabaruta"
+
+        -- Per-row controls. PushID lets us reuse short button labels per row.
+        imgui.PushID(i)
+        if imgui.SmallButton('reset') then
+            config.nm_kills[r.name] = nil
+            save()
+        end
+        if imgui.IsItemHovered() then imgui.SetTooltip('Reset kill counter') end
+        imgui.SameLine()
+        if imgui.SmallButton('forget') then
+            config.nms[r.name] = nil
+            config.nm_kills[r.name] = nil
+            save()
+        end
+        if imgui.IsItemHovered() then imgui.SetTooltip('Un-flag as NM (future kills go back to respawn list)') end
+        imgui.SameLine()
+
+        -- Main row text: "Spiny Spipi  x3   ToD 14:32 · 12m ago · East Sarutabaruta"
         imgui.Text(('%s  x%d'):format(r.name, r.count))
         imgui.SameLine()
         local rhs
@@ -1125,8 +1211,7 @@ local function draw_nms_tab()
         end
         imgui.TextDisabled(rhs)
 
-        -- Right-click context menu, keyed per row so it doesn't open for
-        -- the whole tab. ID stem is `##nmctx_<name>` for uniqueness.
+        -- Right-click context menu kept as an alternative interaction surface.
         if imgui.BeginPopupContextItem('##nmctx_' .. r.name) then
             if imgui.MenuItem('reset count') then
                 config.nm_kills[r.name] = nil
@@ -1139,6 +1224,7 @@ local function draw_nms_tab()
             end
             imgui.EndPopup()
         end
+        imgui.PopID()
     end
 end
 
@@ -1499,26 +1585,8 @@ local function handle(args, raw, prefix_word_count)
             if target == '' then
                 say('usage: /dc nm add <name>')
             else
-                local t_now = now()
-                local rec = config.nm_kills[target] or T{ count = 0, first = t_now, last = 0, last_zone = 0 }
-                local was_new = not config.nms[target]
-                config.nms[target] = true
-                rec.count     = (rec.count or 0) + 1
-                rec.first     = rec.first or t_now
-                rec.last      = t_now
-                rec.last_zone = get_zone_id()
-                config.nm_kills[target] = rec
-                local removed = 0
-                local kept = T{}
-                for _, k in ipairs(kills) do
-                    if k.name == target then
-                        removed = removed + 1
-                    else
-                        table.insert(kept, k)
-                    end
-                end
-                kills = kept
-                save()
+                local removed, was_new = promote_to_nm(target)
+                local rec = config.nm_kills[target]
                 if was_new then
                     say(('%s flagged as NM (count=%d, %d stale kill entr%s swept)'):format(
                         target, rec.count, removed, removed == 1 and 'y' or 'ies'))
