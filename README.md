@@ -11,6 +11,7 @@ Extracted from [huntpartner](https://github.com/TreeFidyDad/huntpartner) v0.7.93
 ## What it does
 
 - **Tracks mob deaths** via HPP-scan — no packet hooks, no chat scrape. It watches the entity table for HP `0` with a previous non-zero, on mob entities only.
+- **Only your kills** — by default, only mobs claimed by you or your party/alliance at time of death are tracked. Random mobs killed by passers-by don't get added to the list. Toggle in the config tab or with `/dc mine`.
 - **Predicts respawn** using a configurable default window (349s — measured for HorizonXI claim mobs) and per-name overrides.
 - **Color-tiered ETA bars** — fully configurable. By default: 6 bands from "Fresh Kill" red through orange / yellow / green / cyan / white at pop.
 - **Urgent banner** for same-zone yellow-tier rows: compass direction + yalms to the death spot, readable even when the attack menu is blocking `/compass`.
@@ -65,6 +66,7 @@ deathclock is **fully standalone**. Its 3D-line machinery (`drawArc`, world-to-s
 /dc ignore [Name]            mute this mob for the session
 /dc unignore [Name]          unmute (or clear all)
 /dc lines                    toggle 3D return-arcs
+/dc mine                     toggle "only my kills" filter
 /dc all                      toggle "always show arcs" (bypass elapsed-pct threshold)
 /dc test                     drop a TestMob entry to verify rendering
 /dc diag                     dump last label-render error (if any)
@@ -80,6 +82,7 @@ Everything below is editable from the **config** tab — no need to hand-edit XM
 | Setting | What it does |
 |---|---|
 | `tracking` | Master on/off for kill tracking |
+| `only my kills` | When on, skip mobs claimed by others. Uses `GetClaimStatus` low 16 bits vs. party/alliance server IDs at the frame before death |
 | `return arcs` | Master on/off for 3D arcs |
 | `arc: X% elapsed` | Don't draw arcs until X% of the respawn window has elapsed. `0` + "always on" = always draw |
 | `keep pop visible (s)` | How long popped (Ready) mobs stay in the list before auto-clearing |

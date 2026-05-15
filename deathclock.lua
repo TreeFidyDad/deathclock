@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.20'
+addon.version   = '0.3.21'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -107,6 +107,11 @@ local default_settings = T{
     -- following the arc to its endpoint. Off in the rare case the user
     -- doesn't have d3d8/tl_helpers available (graceful fallback).
     arc_labels                 = true,
+    -- When true, only mobs that were claimed by the player or someone in
+    -- the player's party/alliance at time of death are tracked. Skips
+    -- random mobs that someone else killed nearby (the noisy default of a
+    -- pure HPP-scan). Set false to go back to "track every mob that dies".
+    only_my_kills              = true,
 }
 
 local config = settings.load(default_settings)
@@ -263,6 +268,12 @@ local kills    = T{}
 -- by the label block; surfaces via `/dc diag` for cold inspection.
 local last_label_err
 local last_hpp = T{}
+-- Previous frame's claimer server ID per entity index. We read claim_id
+-- from the frame BEFORE death because the claim field commonly clears on
+-- the same tick that HPP transitions to 0 -- reading at the death frame
+-- often returns 0 (unclaimed) for a mob we actually killed. Carrying the
+-- previous frame's value preserves credit.
+local last_claim = T{}
 local last_scan = 0
 -- Session-only ignore set, keyed by lowercase name. Deliberately not
 -- persisted: "I don't care about Svana Rarab right now" is almost always
@@ -293,6 +304,28 @@ local function record_kill(name, x, y, z)
     say(('%s killed -- respawn in %s'):format(name, fmt_eta(window)))
 end
 
+-- True when claim_id (low 16 bits of GetClaimStatus) belongs to me or to
+-- anyone in my party/alliance. Loops 0..17 to cover all 3 alliance parties
+-- (18 slots total, matching hpui's pattern). Returns true when claim_id is
+-- zero only if the caller asks for it (deliberately: unclaimed deaths
+-- aren't "mine"). Wrapped because the Ashita API can throw on torn reads
+-- around zoning.
+local function claim_is_mine(claim_id)
+    if not claim_id or claim_id == 0 then return false end
+    local ok, result = pcall(function()
+        local party = AshitaCore:GetMemoryManager():GetParty()
+        for i = 0, 17 do
+            if party:GetMemberIsActive(i) == 1 then
+                if party:GetMemberServerId(i) == claim_id then
+                    return true
+                end
+            end
+        end
+        return false
+    end)
+    return ok and result or false
+end
+
 local function scan_for_deaths()
     local entities = AshitaCore:GetMemoryManager():GetEntity()
     for i = 0, 2303 do
@@ -303,24 +336,34 @@ local function scan_for_deaths()
 
         if name and name ~= '' and is_mob then
             local prev = last_hpp[i]
+            -- Sample claim each frame regardless of HP transition so we
+            -- always have a "previous frame" value ready when death lands.
+            local cur_claim
+            pcall(function()
+                local cs = entities:GetClaimStatus(i)
+                if cs then cur_claim = bit.band(cs, 0xFFFF) end
+            end)
             if prev and prev > 0 and hpp == 0 then
-                -- Grab coords while the entity is still in memory. Ashita's
-                -- binding uses X (east-west) and Y (north-south) for the
-                -- ground plane; Z is altitude. Capture all three for safety
-                -- but only X and Y are used for distance/compass. Wrapped
-                -- in pcall because death detection should never crash on a
-                -- missing position field.
-                local x, y, z
-                pcall(function()
-                    x = entities:GetLocalPositionX(i)
-                    y = entities:GetLocalPositionY(i)
-                    z = entities:GetLocalPositionZ(i)
-                end)
-                record_kill(name, x, y, z)
+                -- Credit check: prefer prev-frame claim (often cleared on
+                -- the death frame itself). Fall back to current claim if
+                -- prev wasn't sampled yet (first-seen-dying edge case).
+                local credit_claim = last_claim[i] or cur_claim or 0
+                local mine = claim_is_mine(credit_claim)
+                if (not config.only_my_kills) or mine then
+                    local x, y, z
+                    pcall(function()
+                        x = entities:GetLocalPositionX(i)
+                        y = entities:GetLocalPositionY(i)
+                        z = entities:GetLocalPositionZ(i)
+                    end)
+                    record_kill(name, x, y, z)
+                end
             end
             last_hpp[i] = hpp
+            last_claim[i] = cur_claim
         else
             last_hpp[i] = nil
+            last_claim[i] = nil
         end
     end
 end
@@ -473,6 +516,14 @@ local function draw_config_tab()
     local tr = { config.track_respawns }
     if imgui.Checkbox('tracking', tr) then
         config.track_respawns = tr[1]; save()
+    end
+    imgui.SameLine()
+    local omk = { config.only_my_kills }
+    if imgui.Checkbox('only my kills', omk) then
+        config.only_my_kills = omk[1]; save()
+    end
+    if imgui.IsItemHovered() then
+        imgui.SetTooltip('Only track mobs claimed by you or your party/alliance at\ntime of death. Skips random mobs killed by others nearby.')
     end
     if drawArc then
         imgui.SameLine()
@@ -1110,7 +1161,7 @@ local function help()
     say('/dc show | hide')
     say('/dc list | clear [Name] | add "Name" <s> | default <s>')
     say('/dc ignore [Name] | unignore [Name]')
-    say('/dc lines | all | test')
+    say('/dc lines | mine | all | test')
     say('alias: /rt <subcmd>')
 end
 
@@ -1157,6 +1208,10 @@ local function handle(args, raw, prefix_word_count)
         config.respawn_lines = not config.respawn_lines
         save()
         say(('return arcs: %s'):format(config.respawn_lines and 'on' or 'off'))
+    elseif sub == 'mine' then
+        config.only_my_kills = not config.only_my_kills
+        save()
+        say(('only my kills: %s'):format(config.only_my_kills and 'on' or 'off'))
     elseif sub == 'all' then
         -- Legacy /dc all → toggle between "show every arc" and "show only
         -- the last quarter". Maps onto the new continuous threshold.
