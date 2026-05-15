@@ -50,6 +50,7 @@ local default_settings = T{
         x = 100,
         y = 100,
         w = 340,
+        bg_alpha = 1.0,
     },
     -- 5m 49s -- measured on HorizonXI for claim mobs.
     default_respawn         = 349,
@@ -531,6 +532,19 @@ local function draw_config_tab()
 
     imgui.Separator()
 
+    -- Window background opacity. 1.0 = fully opaque (original behavior),
+    -- 0.0 = transparent background (text still draws). Useful for keeping
+    -- the kill list visible without obscuring the world behind it.
+    local ba = { config.window.bg_alpha or 1.0 }
+    imgui.PushItemWidth(120)
+    if imgui.SliderFloat('bg opacity', ba, 0.0, 1.0, '%.2f') then
+        config.window.bg_alpha = ba[1]
+        save()
+    end
+    imgui.PopItemWidth()
+
+    imgui.Separator()
+
     -- Tracking + arcs checkboxes share a row to save vertical space.
     local tr = { config.track_respawns }
     if imgui.Checkbox('tracking', tr) then
@@ -1000,6 +1014,7 @@ local function draw_window()
     if not config.window.visible then return end
     imgui.SetNextWindowSize({ config.window.w, 0 }, ImGuiCond_FirstUseEver)
     imgui.SetNextWindowPos({ config.window.x, config.window.y }, ImGuiCond_FirstUseEver)
+    imgui.SetNextWindowBgAlpha(config.window.bg_alpha or 1.0)
     -- ImGuiWindowFlags_AlwaysAutoResize (1<<6 = 64): the window shrink-
     -- wraps its current content every frame. Switching tabs (kills vs
     -- config) or collapsing/expanding the colors panel resizes the
