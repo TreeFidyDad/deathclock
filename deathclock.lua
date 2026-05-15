@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.7'
+addon.version   = '0.3.8'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -401,52 +401,52 @@ end
 -- per-mob overrides, colors & thresholds, arc visibility.
 ----------------------------------------------------------------
 local function draw_config_tab()
-    imgui.TextDisabled('changes save immediately')
-    imgui.Separator()
-
-    -- Default respawn timer. 349s = 5m 49s, the measured HorizonXI claim-mob
-    -- value. Editable so dungeon mobs / NMs / non-claim zones can override.
-    -- InputInt buffer keeps the raw value; we display mm:ss alongside.
+    -- Default respawn: input + mm:ss readout + inline reset on one line.
     local dr = { config.default_respawn or 349 }
+    imgui.PushItemWidth(90)
     if imgui.InputInt('default respawn (s)', dr, 1, 30) then
         if dr[1] < 1 then dr[1] = 1 end
         if dr[1] > 86400 then dr[1] = 86400 end
         config.default_respawn = dr[1]
         save()
     end
+    imgui.PopItemWidth()
     imgui.SameLine()
     imgui.TextDisabled('(' .. fmt_eta(config.default_respawn or 349) .. ')')
-    if imgui.SmallButton('reset to 5m 49s') then
+    imgui.SameLine()
+    if imgui.SmallButton('reset 5m49s') then
         config.default_respawn = 349
         save()
     end
 
     imgui.Separator()
 
-    -- Toggles
+    -- Tracking + arcs checkboxes share a row to save vertical space.
     local tr = { config.track_respawns }
-    if imgui.Checkbox('tracking enabled', tr) then
+    if imgui.Checkbox('tracking', tr) then
         config.track_respawns = tr[1]; save()
     end
     if drawArc then
+        imgui.SameLine()
         local rl = { config.respawn_lines }
         if imgui.Checkbox('return arcs', rl) then
             config.respawn_lines = rl[1]; save()
         end
-        local v = { config.arc_show_above_elapsed_pct or 0 }
-        if imgui.SliderInt('arcs visible above', v, 0, 100, '%d%% elapsed') then
-            config.arc_show_above_elapsed_pct = v[1]; save()
-        end
-        -- Mirror the slider as "seconds remaining when arc appears" against
-        -- the default respawn timer, so users without a color spectrum can
-        -- still reason about WHEN arcs pop on. Editing either field updates
-        -- the other. Per-mob overrides scale proportionally at draw time.
+        -- Arc visibility threshold. Slider + paired seconds InputInt
+        -- (against default respawn) so users can reason in either unit.
         local total = math.max(1, config.default_respawn or 349)
         local pct   = math.max(0, math.min(100, config.arc_show_above_elapsed_pct or 0))
+        local v = { pct }
+        imgui.PushItemWidth(110)
+        if imgui.SliderInt('##arc_pct', v, 0, 100, 'arc: %d%% elapsed') then
+            config.arc_show_above_elapsed_pct = v[1]; save()
+        end
+        imgui.PopItemWidth()
+        imgui.SameLine()
         local remaining = math.floor(total * (1 - pct / 100) + 0.5)
         local rv = { remaining }
-        imgui.PushItemWidth(80)
-        if imgui.InputInt('sec remaining when arc appears', rv, 0, 0) then
+        imgui.PushItemWidth(55)
+        if imgui.InputInt('##arc_secs', rv, 0, 0) then
             if rv[1] < 0 then rv[1] = 0 end
             if rv[1] > total then rv[1] = total end
             config.arc_show_above_elapsed_pct = math.floor((1 - rv[1] / total) * 100 + 0.5)
@@ -454,19 +454,21 @@ local function draw_config_tab()
         end
         imgui.PopItemWidth()
         imgui.SameLine()
-        imgui.TextDisabled(('(%s, vs %s default)'):format(fmt_eta(remaining), fmt_eta(total)))
-        imgui.TextDisabled('0% = always on, 100% = only at pop')
+        if pct >= 100 then
+            imgui.TextDisabled('s  (only at pop)')
+        elseif pct <= 0 then
+            imgui.TextDisabled('s  (always on)')
+        else
+            imgui.TextDisabled(('s  (%s left)'):format(fmt_eta(remaining)))
+        end
     end
 
-    -- How long to keep a kill in the list AFTER it should have popped.
-    -- Useful for unclaimed/missed-window mobs: 0 = drop immediately at
-    -- pop time, higher values keep the row (in ready color) for late
-    -- arrivals. Hard floor at 0; no upper cap but we suggest minutes.
+    -- Keep-pop-visible: how long to keep popped rows in the list.
     do
         local kd = math.max(0, config.keep_dead_after_respawn or 30)
         local kv = { kd }
-        imgui.PushItemWidth(80)
-        if imgui.InputInt('keep pop visible for (s)', kv, 5, 30) then
+        imgui.PushItemWidth(55)
+        if imgui.InputInt('keep pop visible (s)', kv, 5, 30) then
             if kv[1] < 0 then kv[1] = 0 end
             config.keep_dead_after_respawn = kv[1]; save()
         end
@@ -475,7 +477,7 @@ local function draw_config_tab()
         if kd <= 0 then
             imgui.TextDisabled('(drops at pop)')
         else
-            imgui.TextDisabled(('(%s after pop)'):format(fmt_eta(kd)))
+            imgui.TextDisabled(('(%s)'):format(fmt_eta(kd)))
         end
     end
 
@@ -520,19 +522,15 @@ local function draw_config_tab()
     -- red = fresh kill (cooling corpse) cools through orange/yellow/green/
     -- blue as time matures, then purple at ready. Click any swatch to repaint.
     if imgui.CollapsingHeader('colors & thresholds') then
-        -- How many bands. 1 = always one color (no state change ever).
-        -- 2 = one color while waiting + a distinct ready color. 3-6 =
-        -- spectrum across the timer with the last slot as ready. Changing
-        -- this redistributes thresholds evenly so the split is sensible.
         local nn = { math.max(1, math.min(6, config.color_count or 6)) }
+        imgui.PushItemWidth(110)
         if imgui.SliderInt('color count', nn, 1, 6) then
             config.color_count = nn[1]
             redistribute_thresholds(nn[1])
             save()
         end
-        imgui.TextDisabled('1 = single color, 2 = waiting + ready, 3-6 = spectrum')
+        imgui.PopItemWidth()
         imgui.Separator()
-        imgui.TextDisabled('click swatch to recolor; slider sets when band kicks in')
 
         local bands = active_bands()
         local n = #bands
@@ -593,7 +591,7 @@ local function draw_config_tab()
                 if n == 1 then
                     imgui.Text('always')
                 elseif i == 1 then
-                    imgui.Text('Fresh Kill  (from 0:00)')
+                    imgui.Text('Fresh Kill')
                 else
                     local key = THRESHOLD_ORDER[i - 1]
                     local hi  = (i == n) and 100 or 99
@@ -630,10 +628,6 @@ local function draw_config_tab()
                 end
                 imgui.PopID()
             end
-        end
-
-        if n >= 2 then
-            imgui.TextDisabled(('last band also lights up at pop time, vs %s default'):format(fmt_eta(total_secs)))
         end
 
         if imgui.SmallButton('reset colors & thresholds') then
