@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.3'
+addon.version   = '0.3.4'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -511,95 +511,90 @@ local function draw_config_tab()
         end
         imgui.TextDisabled('1 = single color, 2 = waiting + ready, 3-6 = spectrum')
         imgui.Separator()
+        imgui.TextDisabled('click swatch to recolor; slider sets when band kicks in')
 
-        imgui.TextDisabled('click any swatch to pick a color (any RGB)')
         local bands = active_bands()
-        for i, name in ipairs(bands) do
-            local c = config.colors[name]
-            if c then
-                local tmp = { c[1], c[2], c[3] }
-                imgui.PushID('col_' .. name)
-                if imgui.ColorEdit3('##' .. name, tmp) then
-                    config.colors[name] = T{ tmp[1], tmp[2], tmp[3] }; save()
-                end
-                imgui.PopID()
-                imgui.SameLine()
-                local label = name
-                if #bands == 1 then
-                    label = name .. '  (always)'
-                elseif i == #bands then
-                    label = name .. '  (ready)'
-                elseif i == 1 then
-                    label = name .. '  (fresh kill)'
-                end
-                imgui.Text(label)
-            end
-        end
-
-        -- Thresholds. count=1 has none (single color). count>=2 exposes
-        -- (count-1) sliders, one for each band beyond the first. The
-        -- final slider gates the "ready" color; its band ALSO lights up
-        -- at eta<=0 regardless, so 100 = "only at pop time" (default).
         local n = #bands
+        local th = config.thresholds
+        local total_secs = math.max(1, config.default_respawn or 349)
+
+        -- Seed any nil threshold values so sliders don't read garbage on
+        -- first display (older configs predate the purple threshold).
         if n >= 2 then
-            imgui.Separator()
-            imgui.TextDisabled('band kicks in once % elapsed reaches')
-            local th = config.thresholds
-            local active_keys = {}
-            for i = 1, n - 1 do active_keys[i] = THRESHOLD_ORDER[i] end
-            -- Seed any nil values so the slider doesn't read garbage on
-            -- first display (older configs predate the purple threshold).
-            for _, k in ipairs(active_keys) do
+            for i = 1, n - 1 do
+                local k = THRESHOLD_ORDER[i]
                 if th[k] == nil then
                     th[k] = (k == 'purple') and 100 or 0
                 end
             end
-            -- Clamp pass: enforce strict monotonic increase from the
-            -- bottom up, then ceiling-cap from the top down so high-end
-            -- sliders can't pin everything against 100 and force lower
-            -- ones into invalid territory. The final slider (ready band)
-            -- gets 100 as its ceiling so "only at pop" stays reachable.
-            local function clamp_thresholds()
-                for i = 2, #active_keys do
-                    local prev_k, k = active_keys[i-1], active_keys[i]
-                    if th[k] <= th[prev_k] then th[k] = th[prev_k] + 1 end
-                end
-                local last_idx = #active_keys
-                if th[active_keys[last_idx]] > 100 then th[active_keys[last_idx]] = 100 end
-                local ceiling = 99
-                for i = last_idx - 1, 1, -1 do
-                    local k = active_keys[i]
-                    if th[k] > ceiling then th[k] = ceiling end
-                    ceiling = ceiling - 1
-                end
+        end
+
+        -- Clamp pass: enforce strict monotonic increase from the bottom
+        -- up, then ceiling-cap from the top down so high-end sliders
+        -- can't pin everything against 100 and force lower ones into
+        -- invalid territory. The final slider (ready band) gets 100 as
+        -- its ceiling so "only at pop" stays reachable.
+        local function clamp_thresholds()
+            local keys = {}
+            for i = 1, n - 1 do keys[i] = THRESHOLD_ORDER[i] end
+            for i = 2, #keys do
+                local prev_k, k = keys[i-1], keys[i]
+                if th[k] <= th[prev_k] then th[k] = th[prev_k] + 1 end
             end
-            local total_secs = math.max(1, config.default_respawn or 349)
-            for i, key in ipairs(active_keys) do
-                local v = { th[key] }
-                imgui.PushID('th_' .. key)
-                -- Label slider with the band it gates into (bands[i+1]).
-                -- Final band's slider goes up to 100 (only-at-pop); the
-                -- others stop at 99 to keep at least one tick for the
-                -- next band above.
-                local hi = (i == #active_keys) and 100 or 99
-                if imgui.SliderInt(bands[i+1], v, 1, hi, '%d%%') then
-                    th[key] = v[1]; clamp_thresholds(); save()
+            local last_idx = #keys
+            if last_idx >= 1 and th[keys[last_idx]] > 100 then th[keys[last_idx]] = 100 end
+            local ceiling = 99
+            for i = last_idx - 1, 1, -1 do
+                local k = keys[i]
+                if th[k] > ceiling then th[k] = ceiling end
+                ceiling = ceiling - 1
+            end
+        end
+
+        -- One row per band: swatch + name + (if not the first band) its
+        -- threshold slider with mm:ss preview. First band is the floor
+        -- (0% elapsed implicit) so it shows "(fresh kill, 0%)" instead.
+        for i, name in ipairs(bands) do
+            local c = config.colors[name]
+            if c then
+                local tmp = { c[1], c[2], c[3] }
+                imgui.PushID('band_' .. name)
+                if imgui.ColorEdit3('##swatch', tmp) then
+                    config.colors[name] = T{ tmp[1], tmp[2], tmp[3] }; save()
+                end
+                imgui.SameLine()
+
+                if n == 1 then
+                    imgui.Text(name .. '  (always)')
+                elseif i == 1 then
+                    -- Fresh-kill floor: no slider, but show it in the list
+                    -- so the row layout reads cleanly top-to-bottom.
+                    imgui.Text(('%s  (fresh kill, from 0:00)'):format(name))
+                else
+                    local key = THRESHOLD_ORDER[i - 1]
+                    local v = { th[key] }
+                    local hi = (i == n) and 100 or 99
+                    imgui.PushItemWidth(140)
+                    if imgui.SliderInt(name, v, 1, hi, '%d%%') then
+                        th[key] = v[1]; clamp_thresholds(); save()
+                    end
+                    imgui.PopItemWidth()
+                    imgui.SameLine()
+                    local remaining = math.floor(total_secs * (1 - (th[key] or 0) / 100) + 0.5)
+                    if i == n and (th[key] or 0) >= 100 then
+                        imgui.TextDisabled('(ready: only at pop)')
+                    elseif i == n then
+                        imgui.TextDisabled(('(ready at %s left)'):format(fmt_eta(remaining)))
+                    else
+                        imgui.TextDisabled(('(at %s left)'):format(fmt_eta(remaining)))
+                    end
                 end
                 imgui.PopID()
-                imgui.SameLine()
-                -- mm:ss readout: time REMAINING when this band kicks in,
-                -- against the default respawn. Per-mob overrides scale
-                -- proportionally at draw time.
-                local remaining = math.floor(total_secs * (1 - (th[key] or 0) / 100) + 0.5)
-                if i == #active_keys and (th[key] or 0) >= 100 then
-                    imgui.TextDisabled('(only at pop)')
-                else
-                    imgui.TextDisabled(('(%s left)'):format(fmt_eta(remaining)))
-                end
             end
-            if n >= 2 then
-                imgui.TextDisabled(('last band also lights up at pop time, vs %s default'):format(fmt_eta(total_secs)))
-            end
+        end
+
+        if n >= 2 then
+            imgui.TextDisabled(('last band also lights up at pop time, vs %s default'):format(fmt_eta(total_secs)))
         end
 
         if imgui.SmallButton('reset colors & thresholds') then
