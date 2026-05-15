@@ -8,7 +8,7 @@ FFXI respawn timer + 3D return-arc HUD for HorizonXI, extracted from huntpartner
 - **Predicts respawn** using a configurable default window (349s — measured for HorizonXI claim mobs) and per-name overrides.
 - **Color-tiered ETA bars** — red while waiting, yellow at ≤60s, green when ready.
 - **Urgent banner** for same-zone yellow-tier rows: compass direction + yalms to where it dropped, so you can sprint the run-back even when the attack menu blocks `/compass`.
-- **3D return-arcs** drawn from your character to the death spot for yellow/green rows (vendored from `targetlines`).
+- **3D return-arcs** drawn from your character to the death spot, colored by a 5-band palette (vendored from `targetlines`).
 - **Session-only ignore set** to mute noise mobs (`/dc ignore Svana Rarab`) without persisting the choice across reloads.
 
 ## Commands
@@ -23,7 +23,7 @@ FFXI respawn timer + 3D return-arc HUD for HorizonXI, extracted from huntpartner
 /dc ignore [Name]            mute this mob for the session
 /dc unignore [Name]          unmute
 /dc lines                    toggle 3D return-arcs
-/dc all                      toggle red-tier arcs (default: yellow/green only)
+/dc all                      toggle arc-visibility threshold between 100% and 25%
 /dc test                     drop a TestMob entry to verify rendering
 /rt <subcmd>                 alias for /dc <subcmd>
 ```

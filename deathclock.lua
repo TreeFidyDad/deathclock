@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.1.2'
+addon.version   = '0.2.0'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -42,7 +42,35 @@ local default_settings = T{
     keep_dead_after_respawn = 30,
     track_respawns          = true,
     respawn_lines           = true,
-    respawn_lines_show_all  = false,
+    -- (legacy `respawn_lines_show_all` intentionally NOT in defaults — its
+    -- presence in a loaded XML is the signal that the user predates v0.2.0
+    -- and needs the arc_show_below_pct migration.)
+
+    -- Color bands run high-%-remaining → low. Blue = just died, Red = about
+    -- to pop. "ready" is its own band (eta <= 0) so green-means-go survives.
+    -- ImGui RGB floats 0-1. Alpha is not user-editable: bars use 1.0, arcs
+    -- use 0.75 to read over terrain without becoming a blinding overlay.
+    colors = T{
+        ready  = T{ 0.27, 1.00, 0.27 },
+        blue   = T{ 0.35, 0.55, 1.00 },
+        green  = T{ 0.40, 0.85, 0.55 },
+        yellow = T{ 1.00, 0.93, 0.27 },
+        orange = T{ 1.00, 0.60, 0.20 },
+        red    = T{ 1.00, 0.33, 0.33 },
+    },
+    -- Thresholds are the LOWER bound (% of total respawn remaining) for each
+    -- band. Going down: > blue → blue, > green → green, ..., otherwise red.
+    -- Must stay monotonically decreasing; clamped on slider edit.
+    thresholds = T{
+        blue   = 75,
+        green  = 50,
+        yellow = 25,
+        orange = 10,
+    },
+    -- In-world arcs render only when remaining % <= this. 100 = always,
+    -- 0 = never (use the on/off toggle for that). Replaces the old binary
+    -- "show all" toggle with a continuous knob.
+    arc_show_below_pct = 100,
 }
 
 local config = settings.load(default_settings)
@@ -52,6 +80,20 @@ local config = settings.load(default_settings)
 -- without re-running /dc default.
 if config.default_respawn == 300 or config.default_respawn == 345 then
     config.default_respawn = 349
+    settings.save()
+end
+
+-- v0.2.0 migration: legacy boolean `respawn_lines_show_all` becomes the
+-- continuous `arc_show_below_pct`. False (the old default) meant "only
+-- green and yellow arcs" — yellow was eta<=60s, ~17% remaining for a 349s
+-- timer. Map false → 25 (a touch more permissive than the old yellow line
+-- so users don't feel they lost arcs), true → 100 (always show).
+-- Sentinel prevents re-applying this if the user later lowers the value to 0.
+if not config._arc_pct_migrated then
+    config._arc_pct_migrated = true
+    if config.respawn_lines_show_all == false then
+        config.arc_show_below_pct = 25
+    end
     settings.save()
 end
 
@@ -228,10 +270,31 @@ local function build_respawn_rows()
     return rows
 end
 
-local function color_for_eta(eta)
-    if eta <= 0   then return { 0.4, 1.0, 0.4, 1.0 } end
-    if eta <= 60  then return { 1.0, 1.0, 0.4, 1.0 } end
-    return { 1.0, 0.5, 0.5, 1.0 }
+local function color_for(eta, total)
+    if eta <= 0 then return config.colors.ready end
+    local pct = (total and total > 0) and (eta / total * 100) or 100
+    local th = config.thresholds
+    if pct >= th.blue   then return config.colors.blue   end
+    if pct >= th.green  then return config.colors.green  end
+    if pct >= th.yellow then return config.colors.yellow end
+    if pct >= th.orange then return config.colors.orange end
+    return config.colors.red
+end
+
+-- ImGui RGB floats → drawArc ARGB uint32. Alpha hardcoded to 0xC0 (~75%):
+-- matches the original arc alpha and reads over terrain without dominating.
+local function rgb_to_argb(c, alpha)
+    local a = alpha or 0xC0
+    local r = math.floor((c[1] or 0) * 255 + 0.5)
+    local g = math.floor((c[2] or 0) * 255 + 0.5)
+    local b = math.floor((c[3] or 0) * 255 + 0.5)
+    return a * 0x1000000 + r * 0x10000 + g * 0x100 + b
+end
+
+-- Bars use ImGui PushStyleColor which wants {r,g,b,a}. Wrap the RGB triple
+-- with a full-opacity alpha so we don't mutate the stored table.
+local function bar_rgba(c)
+    return { c[1], c[2], c[3], 1.0 }
 end
 
 local function draw_respawn_body()
@@ -245,12 +308,77 @@ local function draw_respawn_body()
         if imgui.Checkbox('return arcs', rl) then
             config.respawn_lines = rl[1]; save()
         end
-        if config.respawn_lines then
-            imgui.SameLine()
-            local sa = { config.respawn_lines_show_all }
-            if imgui.Checkbox('show all', sa) then
-                config.respawn_lines_show_all = sa[1]; save()
+    end
+
+    -- Collapsed by default — most users never open it, but the knobs are
+    -- here for the ones who care. Bands run blue (just died) → red (about
+    -- to pop). "ready" is its own band so green-means-go survives.
+    if imgui.CollapsingHeader('colors & thresholds') then
+        local band_order = { 'ready', 'blue', 'green', 'yellow', 'orange', 'red' }
+        for _, name in ipairs(band_order) do
+            local c = config.colors[name]
+            local tmp = { c[1], c[2], c[3] }
+            imgui.PushID('col_' .. name)
+            if imgui.ColorEdit3('##' .. name, tmp) then
+                config.colors[name] = T{ tmp[1], tmp[2], tmp[3] }; save()
             end
+            imgui.PopID()
+            imgui.SameLine()
+            imgui.Text(name)
+        end
+
+        imgui.Separator()
+        imgui.TextDisabled('band kicks in at % remaining')
+
+        -- Sliders define the LOWER bound for each band, in % of total
+        -- respawn remaining. Must stay monotonically decreasing
+        -- (blue > green > yellow > orange) or the bands lose meaning;
+        -- clamp on edit rather than constrain min/max because clamping
+        -- gives the user a clearer "you hit the floor" signal.
+        local th = config.thresholds
+        local function clamp_thresholds()
+            if th.green  >= th.blue   then th.green  = th.blue   - 1 end
+            if th.yellow >= th.green  then th.yellow = th.green  - 1 end
+            if th.orange >= th.yellow then th.orange = th.yellow - 1 end
+            if th.orange < 1 then th.orange = 1 end
+            if th.yellow < 2 then th.yellow = 2 end
+            if th.green  < 3 then th.green  = 3 end
+            if th.blue   < 4 then th.blue   = 4 end
+        end
+        local function slider(label, key, lo, hi)
+            local v = { th[key] }
+            imgui.PushID('th_' .. key)
+            if imgui.SliderInt(label, v, lo, hi, '%d%%') then
+                th[key] = v[1]; clamp_thresholds(); save()
+            end
+            imgui.PopID()
+        end
+        slider('blue',   'blue',   1, 99)
+        slider('green',  'green',  1, 99)
+        slider('yellow', 'yellow', 1, 99)
+        slider('orange', 'orange', 1, 99)
+
+        if drawArc then
+            imgui.Separator()
+            local v = { config.arc_show_below_pct or 100 }
+            if imgui.SliderInt('arcs visible below', v, 0, 100, '%d%%') then
+                config.arc_show_below_pct = v[1]; save()
+            end
+            imgui.TextDisabled('100% = always, 25% = last quarter only')
+        end
+
+        if imgui.SmallButton('reset colors & thresholds') then
+            config.colors = T{
+                ready  = T{ 0.27, 1.00, 0.27 },
+                blue   = T{ 0.35, 0.55, 1.00 },
+                green  = T{ 0.40, 0.85, 0.55 },
+                yellow = T{ 1.00, 0.93, 0.27 },
+                orange = T{ 1.00, 0.60, 0.20 },
+                red    = T{ 1.00, 0.33, 0.33 },
+            }
+            config.thresholds = T{ blue = 75, green = 50, yellow = 25, orange = 10 }
+            config.arc_show_below_pct = 100
+            save()
         end
     end
 
@@ -336,7 +464,7 @@ local function draw_respawn_body()
         local total = r.respawn_at - (r.respawn_at - get_respawn_window(r.label:gsub(' #%d+$', '')))
         local elapsed = total - eta
         local frac = (total > 0) and math.max(0, math.min(1, elapsed / total)) or 1
-        local c = color_for_eta(eta)
+        local c = bar_rgba(color_for(eta, total))
 
         -- Per-row ignore button. Adds the mob to the session ignore set AND
         -- drops every existing entry for it. PushID keeps the button unique
@@ -436,26 +564,14 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
 
         local cur_zone = get_zone_id()
         local t = now()
-        -- ARGB. Tiered colors mirror the in-window urgency palette:
-        -- green = ready, yellow = soon (<= 60s), red = waiting. 0xC0 alpha
-        -- (~75%) reads over terrain without becoming a blinding overlay.
-        -- When respawn_lines_show_all is off, only green/yellow render.
-        local COLOR_GREEN  = 0xC044FF44
-        local COLOR_YELLOW = 0xC0FFEE44
-        local COLOR_RED    = 0xC0FF5555
-        local show_all = config.respawn_lines_show_all
+        local thr_pct = config.arc_show_below_pct or 100
         for _, k in ipairs(kills) do
             if k.zone == cur_zone and k.x and k.y and k.z then
                 local eta = k.respawn_at - t
-                local color
-                if eta <= 0 then
-                    color = COLOR_GREEN
-                elseif eta <= 60 then
-                    color = COLOR_YELLOW
-                elseif show_all then
-                    color = COLOR_RED
-                end
-                if color then
+                local total = k.respawn_at - (k.killed_at or k.respawn_at)
+                local pct = (total > 0) and math.max(0, eta / total * 100) or 0
+                if eta <= 0 or pct <= thr_pct then
+                    local color = rgb_to_argb(color_for(eta, total))
                     drawArc(px, py, pz, k.x, k.y, k.z, color, 1)
                 end
             end
@@ -595,9 +711,15 @@ local function handle(args, raw, prefix_word_count)
         save()
         say(('return arcs: %s'):format(config.respawn_lines and 'on' or 'off'))
     elseif sub == 'all' then
-        config.respawn_lines_show_all = not config.respawn_lines_show_all
+        -- Legacy /dc all → toggle between "show every arc" and "show only
+        -- the last quarter". Maps onto the new continuous arc_show_below_pct.
+        if (config.arc_show_below_pct or 100) >= 100 then
+            config.arc_show_below_pct = 25
+        else
+            config.arc_show_below_pct = 100
+        end
         save()
-        say(('show-all arcs: %s'):format(config.respawn_lines_show_all and 'on' or 'off'))
+        say(('arcs visible below: %d%%'):format(config.arc_show_below_pct))
     elseif sub == 'help' then
         help()
     else
