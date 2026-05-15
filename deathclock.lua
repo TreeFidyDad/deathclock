@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.10'
+addon.version   = '0.3.11'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -99,6 +99,10 @@ local default_settings = T{
     -- 100 = never (use the on/off toggle for that). A higher value hides
     -- arcs for fresh kills and reveals them as the timer matures.
     arc_show_above_elapsed_pct = 0,
+    -- When true, arcs ignore the threshold above and render the moment a
+    -- kill is logged. The slider stays in config but is disabled while this
+    -- is on. Default true because "always on" is what most users want.
+    arc_always_on              = true,
     -- Draw the mob name + eta as a floating text label at the death spot,
     -- following the arc to its endpoint. Off in the rare case the user
     -- doesn't have d3d8/tl_helpers available (graceful fallback).
@@ -125,7 +129,18 @@ if not config._arc_pct_migrated then
     config._arc_pct_migrated = true
     if config.respawn_lines_show_all == false then
         config.arc_show_above_elapsed_pct = 80
+        config.arc_always_on = false
     end
+    settings.save()
+end
+
+-- v0.3.10 migration: introduced `arc_always_on` checkbox. Existing users
+-- whose slider sat at 0 ("always on") get the checkbox flipped on so
+-- behavior is unchanged. Anyone with a non-zero threshold keeps the
+-- slider active. Sentinel keyed off the new field's absence in storage.
+if config._arc_always_on_migrated == nil then
+    config._arc_always_on_migrated = true
+    config.arc_always_on = ((config.arc_show_above_elapsed_pct or 0) <= 0)
     settings.save()
 end
 
@@ -469,34 +484,46 @@ local function draw_config_tab()
                 config.arc_labels = al[1]; save()
             end
         end
-        -- Arc visibility threshold. Slider + paired seconds InputInt
-        -- (against default respawn) so users can reason in either unit.
-        local total = math.max(1, config.default_respawn or 349)
-        local pct   = math.max(0, math.min(100, config.arc_show_above_elapsed_pct or 0))
-        local v = { pct }
-        imgui.PushItemWidth(110)
-        if imgui.SliderInt('##arc_pct', v, 0, 100, 'arc: %d%% elapsed') then
-            config.arc_show_above_elapsed_pct = v[1]; save()
+        -- "always" toggle bypasses the threshold below. When checked, the
+        -- slider/secs row is replaced by a short status line so the config
+        -- tab stays compact.
+        local ao = { config.arc_always_on }
+        if imgui.Checkbox('always show arcs', ao) then
+            config.arc_always_on = ao[1]; save()
         end
-        imgui.PopItemWidth()
-        imgui.SameLine()
-        local remaining = math.floor(total * (1 - pct / 100) + 0.5)
-        local rv = { remaining }
-        imgui.PushItemWidth(55)
-        if imgui.InputInt('##arc_secs', rv, 0, 0) then
-            if rv[1] < 0 then rv[1] = 0 end
-            if rv[1] > total then rv[1] = total end
-            config.arc_show_above_elapsed_pct = math.floor((1 - rv[1] / total) * 100 + 0.5)
-            save()
-        end
-        imgui.PopItemWidth()
-        imgui.SameLine()
-        if pct >= 100 then
-            imgui.TextDisabled('s  (only at pop)')
-        elseif pct <= 0 then
-            imgui.TextDisabled('s  (always on)')
+        if config.arc_always_on then
+            imgui.SameLine()
+            imgui.TextDisabled('(threshold disabled)')
         else
-            imgui.TextDisabled(('s  (%s left)'):format(fmt_eta(remaining)))
+            -- Arc visibility threshold. Slider + paired seconds InputInt
+            -- (against default respawn) so users can reason in either unit.
+            local total = math.max(1, config.default_respawn or 349)
+            local pct   = math.max(0, math.min(100, config.arc_show_above_elapsed_pct or 0))
+            local v = { pct }
+            imgui.PushItemWidth(110)
+            if imgui.SliderInt('##arc_pct', v, 0, 100, 'arc: %d%% elapsed') then
+                config.arc_show_above_elapsed_pct = v[1]; save()
+            end
+            imgui.PopItemWidth()
+            imgui.SameLine()
+            local remaining = math.floor(total * (1 - pct / 100) + 0.5)
+            local rv = { remaining }
+            imgui.PushItemWidth(55)
+            if imgui.InputInt('##arc_secs', rv, 0, 0) then
+                if rv[1] < 0 then rv[1] = 0 end
+                if rv[1] > total then rv[1] = total end
+                config.arc_show_above_elapsed_pct = math.floor((1 - rv[1] / total) * 100 + 0.5)
+                save()
+            end
+            imgui.PopItemWidth()
+            imgui.SameLine()
+            if pct >= 100 then
+                imgui.TextDisabled('s  (only at pop)')
+            elseif pct <= 0 then
+                imgui.TextDisabled('s  (always on)')
+            else
+                imgui.TextDisabled(('s  (%s left)'):format(fmt_eta(remaining)))
+            end
         end
     end
 
@@ -908,7 +935,7 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                 else
                     pct_elapsed = 100
                 end
-                if eta <= 0 or pct_elapsed >= thr_pct then
+                if eta <= 0 or config.arc_always_on or pct_elapsed >= thr_pct then
                     local rgb   = color_for(eta, total)
                     local color = rgb_to_argb(rgb)
                     drawArc(px, py, pz, k.x, k.y, k.z, color, 1)
