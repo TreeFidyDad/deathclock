@@ -97,6 +97,7 @@ Everything below is editable from the **config** tab — no need to hand-edit XM
 | `arc: X% elapsed` | Don't draw arcs until X% of the respawn window has elapsed. `0` + "always on" = always draw |
 | `keep pop visible (s)` | How long popped (Ready) mobs stay in the list before auto-clearing |
 | `default respawn (s)` | Global default if no per-mob override exists |
+| `use mobdb` | When mobdb is installed, look up per-mob `Respawn` and `Notorious` flag from its zone data files. NMs auto-route to the NMs tab on first kill; mobs with non-default respawn windows use mobdb's value |
 | `bg opacity` | Window background transparency (0.0 = fully transparent, 1.0 = opaque) |
 | `per-mob overrides` | Named exceptions to the default |
 | `colors & thresholds` | Number of color bands + the percent-elapsed boundary + display color for each |

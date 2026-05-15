@@ -65,6 +65,9 @@ local default_settings = T{
     -- spawn model (lottery/window/force-pop) doesn't fit a fixed timer.
     nms                     = T{},
     nm_kills                = T{},
+    -- When mobdb is installed, look up per-mob Notorious flag + Respawn time
+    -- from its zone data files. Toggle off if it causes problems.
+    use_mobdb               = true,
     -- (legacy `respawn_lines_show_all` intentionally NOT in defaults -- its
     -- presence in a loaded XML is the signal that the user predates v0.2.0
     -- and needs the arc_show_below_pct migration.)
@@ -296,15 +299,85 @@ local function is_ignored(name)
     return name and ignored[name:lower()] ~= nil
 end
 
+-- Forward declarations -- promote_to_nm is defined later (it shares helpers
+-- with record_nm_kill) but record_kill needs to reach it for mobdb-detected
+-- NMs. Declaring `local` here without assignment lets the later `function ...`
+-- (no `local`) assign to this slot rather than introduce a new one.
+local promote_to_nm
+local record_nm_kill
+
+-- ============================================================
+-- mobdb integration (optional)
+-- ============================================================
+-- If the `mobdb` addon (by Velyn-FFXI / Hilburn et al) is installed, deathclock
+-- uses its per-zone mob database for two things:
+--   1. Notorious detection -- if mobdb says Notorious=true, divert kills to
+--      the NMs tab. More reliable than the chat-article heuristic and works
+--      for the FIRST kill (no race with the entity scanner).
+--   2. Respawn time -- per-mob Respawn seconds beats our 349s default for
+--      mobs that have non-default respawn windows.
+-- We READ mobdb's data files; we do not require the addon to be loaded. If
+-- mobdb is not installed the lookups silently return nil and deathclock
+-- behaves exactly as before.
+
+local mobdb_zone_cache = {}    -- [zone_id] = data_table  or  false (known-missing)
+
+local function mobdb_load_zone(zone_id)
+    if not zone_id or zone_id == 0 then return nil end
+    if mobdb_zone_cache[zone_id] ~= nil then
+        return mobdb_zone_cache[zone_id] or nil
+    end
+    local path = string.format('%saddons/mobdb/data/%u.lua', AshitaCore:GetInstallPath(), zone_id)
+    local f = io.open(path, 'r')
+    if not f then
+        mobdb_zone_cache[zone_id] = false
+        return nil
+    end
+    f:close()
+    local chunk, err = loadfile(path)
+    if not chunk then
+        mobdb_zone_cache[zone_id] = false
+        return nil
+    end
+    local ok, data = pcall(chunk)
+    if not ok or type(data) ~= 'table' or type(data.Names) ~= 'table' then
+        mobdb_zone_cache[zone_id] = false
+        return nil
+    end
+    mobdb_zone_cache[zone_id] = data
+    return data
+end
+
+-- Look up a mob in the current zone's mobdb. Returns the record table or nil.
+local function mobdb_lookup(name)
+    if not config.use_mobdb then return nil end
+    if not name or name == '' then return nil end
+    local data = mobdb_load_zone(get_zone_id())
+    if not data then return nil end
+    return data.Names[name]
+end
+
 local function get_respawn_window(name)
-    return config.overrides[name] or config.default_respawn
+    if config.overrides[name] then return config.overrides[name] end
+    local rec = mobdb_lookup(name)
+    if rec and type(rec.Respawn) == 'number' and rec.Respawn > 0 then
+        return rec.Respawn
+    end
+    return config.default_respawn
 end
 
 local function record_kill(name, x, y, z)
     if is_ignored(name) then return end
-    -- NMs are tracked in the NM counter table, not the respawn list.
-    -- Skip silently here; the text_in handler is the source of truth for NM kills.
+    -- Already-known NM -> handled by the NM tab, not the respawn list.
     if config.nms[name] then return end
+    -- New mobdb-detected NM -> promote on the spot. More reliable than the
+    -- chat-article heuristic and works for the FIRST kill (no race with the
+    -- entity scanner). Chat handler stays as a backstop for kills mobdb missed.
+    local rec = mobdb_lookup(name)
+    if rec and rec.Notorious then
+        promote_to_nm(name)
+        return
+    end
     local t = now()
     local window = get_respawn_window(name)
     table.insert(kills, {
@@ -325,7 +398,7 @@ end
 -- mob in the last 10 seconds: chat lags entity-scan by ~0.5-1s, so the
 -- very first kill of a brand-new NM gets recorded as a respawn before
 -- chat fires. This cleanup turns that race into self-correction.
-local function record_nm_kill(name)
+function record_nm_kill(name)
     if not name or name == '' then return end
     if is_ignored(name) then return end
 
@@ -397,7 +470,7 @@ end
 
 -- Manual promotion: flag as NM and sweep every kills-tab entry for this name
 -- regardless of age. Used by the GUI "NM" button and `/dc nm add <name>`.
-local function promote_to_nm(name)
+function promote_to_nm(name)
     if not name or name == '' then return 0, false end
     local t_now = now()
     local rec = config.nm_kills[name] or T{ count = 0, first = t_now, last = 0, last_zone = 0 }
@@ -681,6 +754,19 @@ local function draw_config_tab()
         save()
     end
     imgui.PopItemWidth()
+
+    -- mobdb integration toggle. Off = treat every kill the same regardless
+    -- of what mobdb says. On (default) = use mobdb's Respawn time per-mob
+    -- and auto-divert Notorious mobs to the NMs tab.
+    local um = { config.use_mobdb }
+    if imgui.Checkbox('use mobdb (Respawn + Notorious)', um) then
+        config.use_mobdb = um[1]
+        if not config.use_mobdb then mobdb_zone_cache = {} end
+        save()
+    end
+    if imgui.IsItemHovered() then
+        imgui.SetTooltip('Reads addons/mobdb/data/<zone>.lua at runtime.\nNo-op if mobdb is not installed.')
+    end
 
     imgui.Separator()
 
@@ -1616,6 +1702,11 @@ local function handle(args, raw, prefix_word_count)
             strip = strip + #args[i] + 1
         end
         cmd_unignore(raw:sub(strip + 1))
+    elseif sub == 'mobdb' then
+        config.use_mobdb = not config.use_mobdb
+        if not config.use_mobdb then mobdb_zone_cache = {} end
+        save()
+        say(('mobdb integration: %s'):format(config.use_mobdb and 'on' or 'off'))
     elseif sub == 'nm' then
         local action = args[prefix_word_count + 2]
         action = action and action:lower() or 'list'
