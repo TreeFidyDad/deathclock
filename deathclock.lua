@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.22'
+addon.version   = '0.3.23'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -779,6 +779,37 @@ local function draw_config_tab()
             config.arc_show_above_elapsed_pct = 0
             save()
         end
+    end
+
+    -- Diagnostics: live mirror of `/dc diag`, collapsed by default so it
+    -- stays out of the way until something misbehaves. Same field set as
+    -- the chat dump so debugging notes from chat-paste days still apply.
+    imgui.Separator()
+    if imgui.CollapsingHeader('diagnostics') then
+        local function tf(b) return b and 'on' or 'off' end
+        imgui.TextDisabled(('addon v%s'):format(addon.version))
+        imgui.Text(('bindings: drawArc=%s tl_helpers=%s d3d8dev=%s d3dC=%s'):format(
+            tf(drawArc ~= nil), tf(tl_helpers ~= nil), tf(d3d8dev ~= nil), tf(d3dC ~= nil)))
+        imgui.Text(('flags: labels=%s arcs=%s track=%s only_my_kills=%s'):format(
+            tf(config.arc_labels), tf(config.respawn_lines),
+            tf(config.track_respawns), tf(config.only_my_kills)))
+
+        local cur_zone = get_zone_id()
+        local n_total, n_zone = 0, 0
+        for _, k in ipairs(kills) do
+            n_total = n_total + 1
+            if k.zone == cur_zone and k.x and k.y and k.z then n_zone = n_zone + 1 end
+        end
+        imgui.Text(('kills: %d total, %d in this zone w/ positions'):format(n_total, n_zone))
+
+        local my_sid = 0
+        pcall(function()
+            my_sid = AshitaCore:GetMemoryManager():GetParty():GetMemberServerId(0) or 0
+        end)
+        imgui.Text(('my server id: 0x%x  (low16 = 0x%x)'):format(my_sid, bit.band(my_sid, 0xFFFF)))
+        imgui.Text(('last claim seen at death: 0x%x'):format(last_seen_claim or 0))
+        imgui.Text(('last filter skip: %s'):format(tostring(last_filter_skip)))
+        imgui.Text(('last label err: %s'):format(tostring(last_label_err)))
     end
 end
 
