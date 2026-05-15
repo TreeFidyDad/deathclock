@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.26'
+addon.version   = '0.3.27'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -844,8 +844,31 @@ local function draw_kills_tab()
     end
 
     local rows = build_respawn_rows()
+
+    -- Session ignore list. Factored out so we can render it whether or not
+    -- there are tracked kills -- otherwise ignoring your only mob hides the
+    -- unignore UI behind the 'no kills yet' early return.
+    local function draw_ignored_list()
+        local ignored_display = {}
+        for _, disp in pairs(ignored) do table.insert(ignored_display, disp) end
+        if #ignored_display == 0 then return end
+        table.sort(ignored_display, function(a, b) return a:lower() < b:lower() end)
+        imgui.Separator()
+        imgui.TextDisabled(('ignored this session (%d):'):format(#ignored_display))
+        for i, disp in ipairs(ignored_display) do
+            imgui.PushID('ign_list_' .. i)
+            if imgui.SmallButton('unignore') then
+                ignored[disp:lower()] = nil
+            end
+            imgui.PopID()
+            imgui.SameLine()
+            imgui.Text(disp)
+        end
+    end
+
     if #rows == 0 then
         imgui.TextDisabled('no kills yet')
+        draw_ignored_list()
         return
     end
     local t = now()
@@ -989,24 +1012,7 @@ local function draw_kills_tab()
         end
     end
 
-    -- Session ignore list. Rendered inline below the kills when non-empty
-    -- so 'ign' gives immediate feedback and unignoring is one click away.
-    local ignored_display = {}
-    for _, disp in pairs(ignored) do table.insert(ignored_display, disp) end
-    if #ignored_display > 0 then
-        table.sort(ignored_display, function(a, b) return a:lower() < b:lower() end)
-        imgui.Separator()
-        imgui.TextDisabled(('ignored this session (%d):'):format(#ignored_display))
-        for i, disp in ipairs(ignored_display) do
-            imgui.PushID('ign_list_' .. i)
-            if imgui.SmallButton('unignore') then
-                ignored[disp:lower()] = nil
-            end
-            imgui.PopID()
-            imgui.SameLine()
-            imgui.Text(disp)
-        end
-    end
+    draw_ignored_list()
 end
 
 ----------------------------------------------------------------
