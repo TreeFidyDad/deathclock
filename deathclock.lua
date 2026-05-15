@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.2'
+addon.version   = '0.3.3'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -67,14 +67,18 @@ local default_settings = T{
     -- white/brown, autumn, whatever) is achievable.
     color_count = 6,
     -- Thresholds are the LOWER bound (% of total respawn ELAPSED) for each
-    -- band. Going up: >= blue → blue, >= green → green, ..., otherwise red.
-    -- Must stay monotonically increasing; clamped on slider edit. Red is
-    -- the floor (no slider), purple is eta<=0 (no slider).
+    -- band beyond the first. Going up: >= purple → purple, >= blue → blue,
+    -- ..., otherwise red. Must stay monotonically increasing; clamped on
+    -- slider edit. Red is the floor (no slider). Purple's default of 100
+    -- means "only at pop time (eta<=0)" -- the final band always kicks in
+    -- at pop regardless of its threshold, but you can drag this lower for
+    -- an early-warning color (e.g. 90 = ready color shows in the last 10%).
     thresholds = T{
         orange = 20,
         yellow = 40,
         green  = 60,
         blue   = 80,
+        purple = 100,
     },
     -- In-world arcs render only when pct ELAPSED >= this. 0 = always,
     -- 100 = never (use the on/off toggle for that). A higher value hides
@@ -319,10 +323,12 @@ local function build_respawn_rows()
 end
 
 -- Color band ordering, fresh kill -> ready. Used by color_for() and the
--- config UI. THRESHOLD_ORDER[i] is the lower-bound threshold for the
--- (i+1)-th timer band; final slot ('purple') is gated by eta<=0, not a %.
+-- config UI. THRESHOLD_ORDER[i] is the lower-bound %-elapsed threshold
+-- for the (i+1)-th band. The final band's threshold defaults to 100
+-- (only at pop), but the eta<=0 short-circuit in color_for() ensures the
+-- last band ALWAYS lights up at pop time, regardless of slider value.
 local BAND_ORDER       = { 'red', 'orange', 'yellow', 'green', 'blue', 'purple' }
-local THRESHOLD_ORDER  = { 'orange', 'yellow', 'green', 'blue' }
+local THRESHOLD_ORDER  = { 'orange', 'yellow', 'green', 'blue', 'purple' }
 
 -- Resolve the configured color_count into the actual list of band names
 -- to use. count=1 -> {red} (single color, no ready distinction).
@@ -336,11 +342,13 @@ local function active_bands()
     return b
 end
 
--- Evenly distribute the active thresholds across [0,100]. Called when
--- color_count changes so going (say) 6 -> 3 gives a sensible 50/50 split
--- instead of leaving the lone active threshold at its old 20% value.
+-- Evenly distribute the *intermediate* thresholds across [0,100] when
+-- color_count changes (so going 6 -> 3 yields a 50/50 split instead of a
+-- stale 20%). The final band's threshold ('purple', the ready slot) is
+-- preserved across count changes -- users tune it deliberately for
+-- early-warning timing, and we don't want to clobber that on a recount.
 local function redistribute_thresholds(n)
-    if n <= 2 then return end
+    if n < 3 then return end
     local timer_bands = n - 1
     local th = config.thresholds
     for i = 1, n - 2 do
@@ -349,9 +357,9 @@ local function redistribute_thresholds(n)
 end
 
 -- Pick the band for a kill based on elapsed fraction of its respawn window.
--- Final band (purple) is special: eta<=0 (pop time). Other bands cascade
--- top-down by %-elapsed threshold. count=1 short-circuits to the single
--- slot regardless of state.
+-- count=1 short-circuits to the single slot. Otherwise eta<=0 forces the
+-- last band (pop-time guarantee), then thresholds cascade top-down. The
+-- last band's threshold can also fire pre-pop for early-warning colors.
 local function color_for(eta, total)
     local bands = active_bands()
     local n = #bands
@@ -364,9 +372,10 @@ local function color_for(eta, total)
         pct_elapsed = 0
     end
     local th = config.thresholds
-    for i = n - 1, 2, -1 do
+    for i = n, 2, -1 do
         local key = THRESHOLD_ORDER[i - 1]
-        if pct_elapsed >= (th[key] or 0) then return config.colors[bands[i]] end
+        local floor_pct = th[key] or (key == 'purple' and 100 or 0)
+        if pct_elapsed >= floor_pct then return config.colors[bands[i]] end
     end
     return config.colors[bands[1]]
 end
@@ -527,40 +536,69 @@ local function draw_config_tab()
             end
         end
 
-        -- Thresholds. count=1 has none (single color). count=2 has none
-        -- (the split is eta<=0, not a %). count>=3 exposes (count-2)
-        -- sliders, one between each pair of adjacent timer bands.
+        -- Thresholds. count=1 has none (single color). count>=2 exposes
+        -- (count-1) sliders, one for each band beyond the first. The
+        -- final slider gates the "ready" color; its band ALSO lights up
+        -- at eta<=0 regardless, so 100 = "only at pop time" (default).
         local n = #bands
-        if n >= 3 then
+        if n >= 2 then
             imgui.Separator()
             imgui.TextDisabled('band kicks in once % elapsed reaches')
             local th = config.thresholds
             local active_keys = {}
-            for i = 1, n - 2 do active_keys[i] = THRESHOLD_ORDER[i] end
+            for i = 1, n - 1 do active_keys[i] = THRESHOLD_ORDER[i] end
+            -- Seed any nil values so the slider doesn't read garbage on
+            -- first display (older configs predate the purple threshold).
+            for _, k in ipairs(active_keys) do
+                if th[k] == nil then
+                    th[k] = (k == 'purple') and 100 or 0
+                end
+            end
             -- Clamp pass: enforce strict monotonic increase from the
             -- bottom up, then ceiling-cap from the top down so high-end
-            -- sliders can't pin everything against 99 and force lower
-            -- ones into invalid territory.
+            -- sliders can't pin everything against 100 and force lower
+            -- ones into invalid territory. The final slider (ready band)
+            -- gets 100 as its ceiling so "only at pop" stays reachable.
             local function clamp_thresholds()
                 for i = 2, #active_keys do
                     local prev_k, k = active_keys[i-1], active_keys[i]
                     if th[k] <= th[prev_k] then th[k] = th[prev_k] + 1 end
                 end
+                local last_idx = #active_keys
+                if th[active_keys[last_idx]] > 100 then th[active_keys[last_idx]] = 100 end
                 local ceiling = 99
-                for i = #active_keys, 1, -1 do
+                for i = last_idx - 1, 1, -1 do
                     local k = active_keys[i]
                     if th[k] > ceiling then th[k] = ceiling end
                     ceiling = ceiling - 1
                 end
             end
+            local total_secs = math.max(1, config.default_respawn or 349)
             for i, key in ipairs(active_keys) do
                 local v = { th[key] }
                 imgui.PushID('th_' .. key)
                 -- Label slider with the band it gates into (bands[i+1]).
-                if imgui.SliderInt(bands[i+1], v, 1, 99, '%d%%') then
+                -- Final band's slider goes up to 100 (only-at-pop); the
+                -- others stop at 99 to keep at least one tick for the
+                -- next band above.
+                local hi = (i == #active_keys) and 100 or 99
+                if imgui.SliderInt(bands[i+1], v, 1, hi, '%d%%') then
                     th[key] = v[1]; clamp_thresholds(); save()
                 end
                 imgui.PopID()
+                imgui.SameLine()
+                -- mm:ss readout: time REMAINING when this band kicks in,
+                -- against the default respawn. Per-mob overrides scale
+                -- proportionally at draw time.
+                local remaining = math.floor(total_secs * (1 - (th[key] or 0) / 100) + 0.5)
+                if i == #active_keys and (th[key] or 0) >= 100 then
+                    imgui.TextDisabled('(only at pop)')
+                else
+                    imgui.TextDisabled(('(%s left)'):format(fmt_eta(remaining)))
+                end
+            end
+            if n >= 2 then
+                imgui.TextDisabled(('last band also lights up at pop time, vs %s default'):format(fmt_eta(total_secs)))
             end
         end
 
@@ -573,7 +611,7 @@ local function draw_config_tab()
                 blue   = T{ 0.35, 0.55, 1.00 },
                 purple = T{ 0.80, 0.40, 1.00 },
             }
-            config.thresholds = T{ orange = 20, yellow = 40, green = 60, blue = 80 }
+            config.thresholds = T{ orange = 20, yellow = 40, green = 60, blue = 80, purple = 100 }
             config.color_count = 6
             config.arc_show_above_elapsed_pct = 0
             save()
