@@ -415,8 +415,31 @@ local function record_kill(name, server_id, x, y, z)
         x          = x,
         y          = y,
         z          = z,
+        server_id  = server_id,
     })
-    say(('%s killed -- respawn in %s'):format(name, fmt_eta(window)))
+    -- PH detection: if this slot has previously hosted a known NM (and the
+    -- current kill is not that NM), call it out. Helps the player know
+    -- when a lottery candidate just dropped.
+    local ph_for = nil
+    if server_id and server_id ~= 0 then
+        local slot = config.slot_map and config.slot_map[tostring(server_id)]
+        if slot and slot.names then
+            local nm_names = {}
+            for n, _ in pairs(slot.names) do
+                if n ~= name and config.nms[n] then
+                    table.insert(nm_names, n)
+                end
+            end
+            if #nm_names > 0 then
+                ph_for = table.concat(nm_names, ', ')
+            end
+        end
+    end
+    if ph_for then
+        say(('%s killed -- respawn in %s  [PH for %s]'):format(name, fmt_eta(window), ph_for))
+    else
+        say(('%s killed -- respawn in %s'):format(name, fmt_eta(window)))
+    end
 end
 
 -- NM kill recorder. Bumps the counter, marks the name as a known NM so
