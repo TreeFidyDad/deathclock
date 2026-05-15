@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.5'
+addon.version   = '0.3.6'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -458,6 +458,27 @@ local function draw_config_tab()
         imgui.TextDisabled('0% = always on, 100% = only at pop')
     end
 
+    -- How long to keep a kill in the list AFTER it should have popped.
+    -- Useful for unclaimed/missed-window mobs: 0 = drop immediately at
+    -- pop time, higher values keep the row (in ready color) for late
+    -- arrivals. Hard floor at 0; no upper cap but we suggest minutes.
+    do
+        local kd = math.max(0, config.keep_dead_after_respawn or 30)
+        local kv = { kd }
+        imgui.PushItemWidth(80)
+        if imgui.InputInt('keep pop visible for (s)', kv, 5, 30) then
+            if kv[1] < 0 then kv[1] = 0 end
+            config.keep_dead_after_respawn = kv[1]; save()
+        end
+        imgui.PopItemWidth()
+        imgui.SameLine()
+        if kd <= 0 then
+            imgui.TextDisabled('(drops at pop)')
+        else
+            imgui.TextDisabled(('(%s after pop)'):format(fmt_eta(kd)))
+        end
+    end
+
     imgui.Separator()
 
     -- Per-mob overrides. List sorted alphabetically; each row has a delete
@@ -551,10 +572,11 @@ local function draw_config_tab()
             end
         end
 
-        -- One row per band: swatch + name + (if not the first band) its
-        -- threshold slider, an editable "seconds remaining" InputInt, and
-        -- an mm:ss readout. First band is the implicit 0% floor so it
-        -- shows "(fresh kill, from 0:00)" with no controls.
+        -- One row per band: swatch + slider + seconds InputInt + role tag.
+        -- We drop the color-name label (red/orange/...) since those names
+        -- become a lie the moment the user recolors a swatch. Role tags
+        -- ('Fresh Kill', 'Ready') and the visible mm:ss are the durable
+        -- semantics. First band is the implicit 0% floor (no controls).
         for i, name in ipairs(bands) do
             local c = config.colors[name]
             if c then
@@ -566,29 +588,24 @@ local function draw_config_tab()
                 imgui.SameLine()
 
                 if n == 1 then
-                    imgui.Text(name .. '  (always)')
+                    imgui.Text('always')
                 elseif i == 1 then
-                    imgui.Text(('%s  (fresh kill, from 0:00)'):format(name))
+                    imgui.Text('Fresh Kill  (from 0:00)')
                 else
-                    local key   = THRESHOLD_ORDER[i - 1]
-                    local hi    = (i == n) and 100 or 99
-                    -- Slider: % elapsed at which this band kicks in.
+                    local key = THRESHOLD_ORDER[i - 1]
+                    local hi  = (i == n) and 100 or 99
                     local v = { th[key] }
-                    imgui.PushItemWidth(110)
-                    if imgui.SliderInt(name, v, 1, hi, '%d%%') then
+                    imgui.PushItemWidth(90)
+                    if imgui.SliderInt('##sl_' .. key, v, 1, hi, '%d%%') then
                         th[key] = v[1]; clamp_thresholds(); save()
                     end
                     imgui.PopItemWidth()
-                    -- Editable seconds-remaining: paired view of the same
-                    -- threshold against the default respawn. Editing this
-                    -- field snaps the slider, and vice versa. Per-mob
-                    -- overrides scale proportionally at draw time.
                     imgui.SameLine()
                     local cur_pct   = th[key] or 0
                     local remaining = math.floor(total_secs * (1 - cur_pct / 100) + 0.5)
                     local rv = { remaining }
-                    imgui.PushItemWidth(55)
-                    if imgui.InputInt('##secs', rv, 0, 0) then
+                    imgui.PushItemWidth(50)
+                    if imgui.InputInt('##secs_' .. key, rv, 0, 0) then
                         if rv[1] < 0 then rv[1] = 0 end
                         if rv[1] > total_secs then rv[1] = total_secs end
                         local new_pct = math.floor((1 - rv[1] / total_secs) * 100 + 0.5)
@@ -601,11 +618,11 @@ local function draw_config_tab()
                     local final_pct = th[key] or 0
                     local final_rem = math.floor(total_secs * (1 - final_pct / 100) + 0.5)
                     if i == n and final_pct >= 100 then
-                        imgui.TextDisabled('s (only at pop)')
+                        imgui.TextDisabled('s  Ready (only at pop)')
                     elseif i == n then
-                        imgui.TextDisabled(('s left = %s ready'):format(fmt_eta(final_rem)))
+                        imgui.TextDisabled(('s  Ready (%s left)'):format(fmt_eta(final_rem)))
                     else
-                        imgui.TextDisabled(('s left = %s'):format(fmt_eta(final_rem)))
+                        imgui.TextDisabled(('s  (%s left)'):format(fmt_eta(final_rem)))
                     end
                 end
                 imgui.PopID()
