@@ -14,7 +14,7 @@ Extracted from [huntpartner](https://github.com/TreeFidyDad/huntpartner) v0.7.93
 - **Only your kills** — by default, only mobs claimed by you or your party/alliance at time of death are tracked. Random mobs killed by passers-by don't get added to the list. Toggle in the config tab or with `/dc mine`.
 - **Predicts respawn** using a configurable default window (349s — based on observed claim-mob respawns; tune for your server) and per-name overrides.
 - **Color-tiered ETA bars** — fully configurable. By default: 6 bands from "Fresh Kill" red through orange / yellow / green / cyan / white at pop.
-- **Urgent banner** for same-zone yellow-tier rows: compass direction + yalms to the death spot, readable even when the attack menu is blocking `/compass`.
+- **NMs tab** — auto-detects Notorious Monster kills from the death chat (FFXI omits the "The " article for NMs) and keeps a persistent kill counter with ToD per mob. Once flagged, NMs are excluded from the respawn list (window/lottery spawns don't fit a fixed timer model).
 - **3D return-arcs** drawn in-world from your character to each death spot, colored by the same 5-band palette so a glance at the screen tells you what's about to pop (vendored from [`targetlines`](https://github.com/RolandJ/targetlines)).
 - **Floating mob labels** that ride the apex of each return-arc so you can identify which line goes to which corpse — even when you've kited halfway across the zone.
 - **"Keep pop visible"** window — kills stay in the list for N seconds after they pop so you have time to actually look at them.
@@ -35,6 +35,12 @@ Default respawn, tracking + arc toggles, per-mob overrides, and a fully editable
 Live mob list with ETA bars, direction + yalms to corpse, single-click clear.
 
 ![kills](assets/kills.png)
+
+### NMs tab
+
+Auto-populated kill counter for Notorious Monsters with ToD timestamp. Right-click a row to reset the counter or un-flag the mob.
+
+![nms](assets/nms.png)
 
 ### Return arcs + labels in-world
 
@@ -68,6 +74,10 @@ deathclock is **fully standalone**. Its 3D-line machinery (`drawArc`, world-to-s
 /dc lines                    toggle 3D return-arcs
 /dc mine                     toggle "only my kills" filter
 /dc all                      toggle "always show arcs" (bypass elapsed-pct threshold)
+/dc nm list                  print tracked NMs + counts to chat
+/dc nm add <Name>            manually flag a mob as NM (sweeps it from kills tab)
+/dc nm reset <Name|all>      reset kill counter for one NM, or all
+/dc nm forget <Name>         un-flag a mob as NM (so it goes back to the respawn list)
 /dc test                     drop a TestMob entry to verify rendering
 /dc diag                     dump last label-render error (if any)
 /rt <subcmd>                 short alias for /dc <subcmd>
@@ -87,6 +97,7 @@ Everything below is editable from the **config** tab — no need to hand-edit XM
 | `arc: X% elapsed` | Don't draw arcs until X% of the respawn window has elapsed. `0` + "always on" = always draw |
 | `keep pop visible (s)` | How long popped (Ready) mobs stay in the list before auto-clearing |
 | `default respawn (s)` | Global default if no per-mob override exists |
+| `bg opacity` | Window background transparency (0.0 = fully transparent, 1.0 = opaque) |
 | `per-mob overrides` | Named exceptions to the default |
 | `colors & thresholds` | Number of color bands + the percent-elapsed boundary + display color for each |
 
