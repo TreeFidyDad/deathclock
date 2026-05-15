@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.19'
+addon.version   = '0.3.20'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -962,28 +962,51 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                     local ok, err = pcall(function()
                         local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
                         local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
-                        -- Park the label at the midpoint between player and
-                        -- grave so it rides along the arc -- once you've run
-                        -- away from the death spot the endpoint is far off
-                        -- (or occluded) but the arc midpoint is still on
-                        -- screen and tied to the visible curve.
+                        -- Replicate drawArc's apex math so the label sits on
+                        -- the *visible* peak of the bezier, not on the
+                        -- ground midpoint. drawArc builds an initial P1 at
+                        -- the linear midpoint, then rotates (P1 - P0) by
+                        -- pi/16 around the unit player->target axis. That
+                        -- rotation is what lifts the curve off the ground;
+                        -- without it the label projects underground.
                         --
-                        -- Axis swap as before: D3D wants (x, altitude, depth),
-                        -- Ashita gives (x, depth, altitude). Add a small +2
-                        -- lift in D3D-Y so the label sits roughly on the arc
-                        -- peak instead of along the ground line.
-                        local mx = (px + k.x) / 2
-                        local my = (pz + k.z) / 2 + 2
-                        local mz = (py + k.y) / 2
+                        -- Axes are swapped to D3D convention (x, alt, depth)
+                        -- in the same way drawArc.lua does at line 60-61.
+                        local zoom = (2.8 - proj._11) * 0.47619047619
+                        local P0x, P0y, P0z = px,  pz,  py
+                        local P2x, P2y, P2z = k.x, k.z, k.y
+                        local P1x = (P0x + P2x) / 2
+                        local P1y = (P0y + P2y) / 2 - 2 - 2 * zoom
+                        local P1z = (P0z + P2z) / 2
+
+                        -- Rodrigues rotation of v=(P1-P0) around the unit
+                        -- axis k=normalize(P2-P0) by pi/16 (matches the
+                        -- `flip=true` branch in tl_helpers.rotateVector16).
+                        local vx, vy, vz = P1x - P0x, P1y - P0y, P1z - P0z
+                        local ax, ay, az = P2x - P0x, P2y - P0y, P2z - P0z
+                        local alen = math.sqrt(ax*ax + ay*ay + az*az)
+                        if alen > 1e-6 then
+                            ax, ay, az = ax / alen, ay / alen, az / alen
+                        end
+                        local ang = math.pi / 16
+                        local s, c = math.sin(ang), math.cos(ang)
+                        local kv  = ax*vx + ay*vy + az*vz
+                        local kvc = kv * (1 - c)
+                        local rx = vx * c + (ay*vz - az*vy) * s + ax * kvc
+                        local ry = vy * c + (az*vx - ax*vz) * s + ay * kvc
+                        local rz = vz * c + (ax*vy - ay*vx) * s + az * kvc
+                        P1x, P1y, P1z = rx + P0x, ry + P0y, rz + P0z
+
+                        -- Bezier(0.5) = 0.25*P0 + 0.5*P1 + 0.25*P2.
+                        local mx = 0.25 * P0x + 0.5 * P1x + 0.25 * P2x
+                        local my = 0.25 * P0y + 0.5 * P1y + 0.25 * P2y
+                        local mz = 0.25 * P0z + 0.5 * P1z + 0.25 * P2z
+
                         local sx, sy, sz = tl_helpers.worldToScreen(mx, my, mz, view, proj)
                         if sx and sz and sz > 0 and sz < 1 then
                             local label = (eta <= 0)
                                 and ('%s  READY'):format(k.name)
                                 or  ('%s  %s'):format(k.name, fmt_eta(math.floor(eta)))
-                            -- Window flags: NoTitleBar|NoResize|NoMove
-                            --   |NoScrollbar|AlwaysAutoResize|NoBackground
-                            --   |NoSavedSettings|NoInputs|NoFocusOnAppearing
-                            --   |NoBringToFrontOnFocus = 13263
                             local FLAGS = 13263
                             local wid   = ('##dclbl_%d_%s'):format(k.killed_at or 0, k.name or '')
                             imgui.SetNextWindowPos({ sx + 6, sy - 8 })
