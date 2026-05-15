@@ -1861,6 +1861,50 @@ local function handle(args, raw, prefix_word_count)
             config.slot_map = T{}
             save()
             say('slot_map cleared')
+        elseif action == 'tag' then
+            -- Manual seed: /dc slots tag <server_id> <NM name>
+            -- For bootstrapping known PH relationships without waiting for
+            -- the next NM pop. server_id accepts decimal or 0xHEX.
+            local sid_raw = args[3 + prefix_word_count]
+            if not sid_raw then
+                say('usage: /dc slots tag <server_id> <NM name>')
+                say('  ex:  /dc slots tag 0x01074130 Spiny Spipi')
+            else
+                local sid_num
+                if sid_raw:sub(1, 2) == '0x' or sid_raw:sub(1, 2) == '0X' then
+                    sid_num = tonumber(sid_raw:sub(3), 16)
+                else
+                    sid_num = tonumber(sid_raw)
+                end
+                local name_start = 0
+                for i = 1, prefix_word_count + 3 do
+                    name_start = name_start + #args[i] + 1
+                end
+                local nm_name = raw:sub(name_start + 1):gsub('^%s+', ''):gsub('%s+$', '')
+                if not sid_num or sid_num == 0 then
+                    say('invalid server_id (expected decimal or 0xHEX)')
+                elseif nm_name == '' then
+                    say('usage: /dc slots tag <server_id> <NM name>')
+                else
+                    local key = tostring(sid_num)
+                    config.slot_map = config.slot_map or T{}
+                    local slot = config.slot_map[key]
+                    if not slot then
+                        slot = T{ zone = get_zone_id(), names = T{}, last_seen = now() }
+                        config.slot_map[key] = slot
+                    end
+                    slot.names[nm_name] = slot.names[nm_name] or T{ count = 0, last = now() }
+                    -- Bump count to 1 if zero so the slot reads as "seen".
+                    if (slot.names[nm_name].count or 0) == 0 then
+                        slot.names[nm_name].count = 1
+                    end
+                    -- Ensure the name is also flagged as an NM so the PH
+                    -- callout in record_kill recognizes it.
+                    config.nms[nm_name] = true
+                    save()
+                    say(('tagged 0x%08x as host of NM "%s"'):format(sid_num, nm_name))
+                end
+            end
         else
             local count = 0
             local with_nms = 0
@@ -1879,7 +1923,7 @@ local function handle(args, raw, prefix_word_count)
             end
             say(('slot_map: %d slots tracked, %d with PH evidence'):format(count, with_nms))
             if action ~= 'verbose' then
-                say('  (use /dc slots verbose to dump all, /dc slots clear to reset)')
+                say('  (use /dc slots verbose | tag <id> <NM> | clear)')
             elseif count > 0 and with_nms == 0 then
                 say('  no slot has been seen as both NM and non-NM yet -- kill some PHs first')
             end
