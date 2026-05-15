@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.24'
+addon.version   = '0.3.25'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -922,11 +922,28 @@ local function draw_kills_tab()
         local frac = (total > 0) and math.max(0, math.min(1, elapsed / total)) or 1
         local c = bar_rgba(color_for(eta, total))
 
-        -- Per-row ignore button. Adds the mob to the session ignore set AND
-        -- drops every existing entry for it. PushID keeps the button unique
-        -- when names repeat across the list.
+        -- Per-row controls:
+        --   'x'   = delete just this one entry. No session ignore. If the
+        --           same mob dies again it tracks normally. This is the
+        --           common "I accidentally tracked a PH I didn't want to
+        --           clutter the list" action.
+        --   'ign' = the heavy-handed version: add the mob to the session
+        --           ignore set AND drop every existing entry for it.
+        --           Future kills of that name are skipped until /reload or
+        --           /dc unignore.
+        -- PushID keeps the buttons unique when names repeat across the list.
         imgui.PushID(i)
         if imgui.SmallButton('x') then
+            local kept = T{}
+            for _, k in ipairs(kills) do
+                if not (k.name == r.name and k.respawn_at == r.respawn_at) then
+                    table.insert(kept, k)
+                end
+            end
+            kills = kept
+        end
+        imgui.SameLine()
+        if imgui.SmallButton('ign') then
             ignored[r.name:lower()] = true
             local kept = T{}
             for _, k in ipairs(kills) do
