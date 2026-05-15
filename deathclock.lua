@@ -1937,6 +1937,56 @@ local function handle(args, raw, prefix_word_count)
                 end
             end
         end
+    elseif sub == 'target' then
+        -- Inspect the player's current main target: name, server_id, and
+        -- any PH/NM evidence recorded for that slot. Useful for deciding
+        -- whether to engage *before* committing to the pull.
+        local idx
+        pcall(function()
+            idx = AshitaCore:GetMemoryManager():GetTarget():GetTargetIndex(0)
+        end)
+        if not idx or idx == 0 then
+            say('no target')
+        else
+            local ents = AshitaCore:GetMemoryManager():GetEntity()
+            local name, sid
+            pcall(function()
+                name = ents:GetName(idx)
+                sid  = ents:GetServerId(idx)
+            end)
+            if not name or name == '' then
+                say(('target idx=%d (no name -- entity gone?)'):format(idx))
+            else
+                say(('target: %s  id=0x%08x  index=%d'):format(name, sid or 0, idx))
+                if sid and sid ~= 0 then
+                    local slot = config.slot_map and config.slot_map[tostring(sid)]
+                    if slot and slot.names then
+                        local nm_names, ph_names = {}, {}
+                        for n, rec in pairs(slot.names) do
+                            if config.nms[n] then
+                                table.insert(nm_names, ('%s x%d'):format(n, rec.count or 1))
+                            elseif n ~= name then
+                                table.insert(ph_names, ('%s x%d'):format(n, rec.count or 1))
+                            end
+                        end
+                        if #nm_names > 0 then
+                            say(('  NM here: %s'):format(table.concat(nm_names, ', ')))
+                            if not config.nms[name] then
+                                say(('  -> "%s" is a PH for this slot'):format(name))
+                            end
+                        end
+                        if #ph_names > 0 then
+                            say(('  also seen: %s'):format(table.concat(ph_names, ', ')))
+                        end
+                        if #nm_names == 0 and #ph_names == 0 then
+                            say('  no slot history yet')
+                        end
+                    else
+                        say('  slot has no recorded history (kill it to start)')
+                    end
+                end
+            end
+        end
     elseif sub == 'lines' then
         config.respawn_lines = not config.respawn_lines
         save()
