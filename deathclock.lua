@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.13'
+addon.version   = '0.3.14'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -949,6 +949,12 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                 -- the kill is logged, even when the arc itself is still
                 -- hidden by the threshold. Gated only by the `labels`
                 -- checkbox and successful d3d8/tl_helpers/ffi loads.
+                --
+                -- Rendered as a tiny transparent overlay window rather than
+                -- a draw-list AddText call: Ashita's imgui binding doesn't
+                -- expose GetBackgroundDrawList, so the draw-list approach
+                -- silently no-ops. The overlay window pattern works on every
+                -- ImGui binding and inherits the addon's font for free.
                 if config.arc_labels and tl_helpers and d3d8dev and d3dC then
                     local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
                     local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
@@ -957,14 +963,18 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                         local label = (eta <= 0)
                             and ('%s  READY'):format(k.name)
                             or  ('%s  %s'):format(k.name, fmt_eta(math.floor(eta)))
-                        local col = rgb_to_imu32(rgb)
-                        local dl  = imgui.GetBackgroundDrawList()
-                        if dl then
-                            -- 1px black drop-shadow for readability over
-                            -- bright terrain. Cheap, no font atlas work.
-                            dl:AddText({ sx + 7, sy - 7 }, 0xFF000000, label)
-                            dl:AddText({ sx + 6, sy - 8 }, col,        label)
+                        -- Window flags: 1 NoTitleBar | 2 NoResize | 4 NoMove
+                        --   | 8 NoScrollbar | 64 AlwaysAutoResize
+                        --   | 128 NoBackground | 256 NoSavedSettings
+                        --   | 512 NoInputs | 4096 NoFocusOnAppearing
+                        --   | 8192 NoBringToFrontOnFocus = 13263
+                        local FLAGS  = 13263
+                        local wid    = ('##dclbl_%d_%s'):format(k.killed_at or 0, k.name or '')
+                        imgui.SetNextWindowPos({ sx + 6, sy - 8 })
+                        if imgui.Begin(wid, true, FLAGS) then
+                            imgui.TextColored({ rgb[1], rgb[2], rgb[3], 1.0 }, label)
                         end
+                        imgui.End()
                     end
                 end
             end
