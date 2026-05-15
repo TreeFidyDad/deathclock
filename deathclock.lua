@@ -358,6 +358,43 @@ local function record_nm_kill(name)
     end
 end
 
+-- Set ToD for an existing NM. `when_spec` may be:
+--   "now"          -> current time
+--   "<N>"          -> N minutes ago (integer)
+--   "HH:MM"        -> today at that local time; if that's in the future,
+--                     interpret as yesterday at that time (last night).
+-- Returns (ok, new_last_ts, msg).
+local function set_nm_tod(name, when_spec)
+    if not name or name == '' then return false, 0, 'empty name' end
+    local rec = config.nm_kills[name]
+    if not rec then return false, 0, ('no NM record for "%s"'):format(name) end
+    when_spec = (when_spec or ''):gsub('^%s+',''):gsub('%s+$','')
+    local new_ts
+    if when_spec == '' or when_spec:lower() == 'now' then
+        new_ts = now()
+    else
+        local hh, mm = when_spec:match('^(%d?%d):(%d%d)$')
+        if hh then
+            local t = os.date('*t')
+            t.hour = tonumber(hh); t.min = tonumber(mm); t.sec = 0
+            new_ts = os.time(t)
+            if new_ts > now() then new_ts = new_ts - 86400 end -- assume yesterday
+        else
+            local n = tonumber(when_spec)
+            if not n or n < 0 then
+                return false, 0, ('bad time spec "%s" -- use now | <minutes> | HH:MM'):format(when_spec)
+            end
+            new_ts = now() - math.floor(n * 60)
+        end
+    end
+    rec.last      = new_ts
+    rec.last_zone = (rec.last_zone and rec.last_zone > 0) and rec.last_zone or get_zone_id()
+    config.nm_kills[name] = rec
+    save()
+    return true, new_ts, nil
+end
+
+
 -- Manual promotion: flag as NM and sweep every kills-tab entry for this name
 -- regardless of age. Used by the GUI "NM" button and `/dc nm add <name>`.
 local function promote_to_nm(name)
@@ -1132,6 +1169,8 @@ end
 -- Module-scoped buffer for the "Add NM" text input. Lives outside
 -- draw_nms_tab so the typed-but-not-submitted text persists across frames.
 local nm_add_buf = { '' }
+-- Per-NM buffers for the ToD-edit popup (keyed by name). Lazily created.
+local nm_tod_buf = {}
 
 local function draw_nms_tab()
     -- Add-by-name row at the top: text input + Add button. Submits on
@@ -1199,6 +1238,40 @@ local function draw_nms_tab()
         end
         if imgui.IsItemHovered() then imgui.SetTooltip('Un-flag as NM (future kills go back to respawn list)') end
         imgui.SameLine()
+        if imgui.SmallButton('ToD') then
+            -- Pre-seed the input with the current minutes-since-last.
+            nm_tod_buf[r.name] = nm_tod_buf[r.name] or { 0 }
+            nm_tod_buf[r.name][1] = math.floor(since / 60)
+            imgui.OpenPopup('##tod_edit_' .. r.name)
+        end
+        if imgui.IsItemHovered() then imgui.SetTooltip('Edit ToD (word-of-mouth)') end
+        imgui.SameLine()
+
+        if imgui.BeginPopup('##tod_edit_' .. r.name) then
+            imgui.Text(('Set ToD for %s'):format(r.name))
+            imgui.Separator()
+            local buf = nm_tod_buf[r.name]
+            imgui.PushItemWidth(80)
+            if imgui.InputInt('minutes ago', buf, 1, 5) then
+                if buf[1] < 0 then buf[1] = 0 end
+                if buf[1] > 1440 then buf[1] = 1440 end
+            end
+            imgui.PopItemWidth()
+            if imgui.Button('Apply') then
+                set_nm_tod(r.name, tostring(buf[1]))
+                imgui.CloseCurrentPopup()
+            end
+            imgui.SameLine()
+            if imgui.Button('Just now') then
+                set_nm_tod(r.name, 'now')
+                imgui.CloseCurrentPopup()
+            end
+            imgui.SameLine()
+            if imgui.Button('Cancel') then
+                imgui.CloseCurrentPopup()
+            end
+            imgui.EndPopup()
+        end
 
         -- Main row text: "Spiny Spipi  x3   ToD 14:32 · 12m ago · East Sarutabaruta"
         imgui.Text(('%s  x%d'):format(r.name, r.count))
@@ -1595,6 +1668,26 @@ local function handle(args, raw, prefix_word_count)
                         target, rec.count, removed, removed == 1 and 'y' or 'ies'))
                 end
             end
+        elseif action == 'tod' then
+            -- /dc nm tod <name> <when>
+            -- <when> is the LAST whitespace-delimited token: now | <minutes> | HH:MM
+            local rest_start = 0
+            for i = 1, prefix_word_count + 2 do
+                rest_start = rest_start + #args[i] + 1
+            end
+            local rest = raw:sub(rest_start + 1):gsub('^%s+', ''):gsub('%s+$', '')
+            local name_part, when_part = rest:match('^(.-)%s+(%S+)$')
+            if not name_part or name_part == '' then
+                say('usage: /dc nm tod <name> now | <minutes> | HH:MM')
+            else
+                local ok, new_ts, err = set_nm_tod(name_part, when_part)
+                if not ok then
+                    say(err)
+                else
+                    say(('%s ToD set to %s (%dm ago)'):format(
+                        name_part, fmt_tod(new_ts), math.floor((now() - new_ts) / 60)))
+                end
+            end
         elseif action == 'forget' then
             local rest_start = 0
             for i = 1, prefix_word_count + 2 do
@@ -1610,7 +1703,7 @@ local function handle(args, raw, prefix_word_count)
                 say(('un-flagged %s as NM'):format(target))
             end
         else
-            say('/dc nm list | add <name> | reset [name|all] | forget <name>')
+            say('/dc nm list | add <name> | tod <name> now|<min>|HH:MM | reset [name|all] | forget <name>')
         end
     elseif sub == 'test' then
         record_kill('TestMob')
