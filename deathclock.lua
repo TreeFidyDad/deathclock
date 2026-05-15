@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.25'
+addon.version   = '0.3.26'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -285,7 +285,7 @@ local last_scan = 0
 local ignored = {}
 
 local function is_ignored(name)
-    return name and ignored[name:lower()] == true
+    return name and ignored[name:lower()] ~= nil
 end
 
 local function get_respawn_window(name)
@@ -944,7 +944,7 @@ local function draw_kills_tab()
         end
         imgui.SameLine()
         if imgui.SmallButton('ign') then
-            ignored[r.name:lower()] = true
+            ignored[r.name:lower()] = r.name
             local kept = T{}
             for _, k in ipairs(kills) do
                 if k.name:lower() ~= r.name:lower() then table.insert(kept, k) end
@@ -955,10 +955,14 @@ local function draw_kills_tab()
         imgui.PopID()
         imgui.SameLine()
 
+        -- Capture the bar's left edge so the text overlay aligns with it
+        -- regardless of how many buttons precede the bar. The old fixed
+        -- SameLine(8 + 24) broke when 'ign' was added.
+        local bar_x = imgui.GetCursorPosX()
         imgui.PushStyleColor(ImGuiCol_PlotHistogram, c)
         imgui.ProgressBar(frac, { -1, 14 }, '')
         imgui.PopStyleColor()
-        imgui.SameLine(8 + 24)
+        imgui.SameLine(bar_x)
         -- Near-black text on the colored bar. White vanishes against the
         -- yellow tier and washes out on green; near-black holds contrast
         -- across all three urgency colors.
@@ -982,6 +986,25 @@ local function draw_kills_tab()
             end
             imgui.SameLine()
             imgui.TextColored(TEXT_DARK, suffix)
+        end
+    end
+
+    -- Session ignore list. Rendered inline below the kills when non-empty
+    -- so 'ign' gives immediate feedback and unignoring is one click away.
+    local ignored_display = {}
+    for _, disp in pairs(ignored) do table.insert(ignored_display, disp) end
+    if #ignored_display > 0 then
+        table.sort(ignored_display, function(a, b) return a:lower() < b:lower() end)
+        imgui.Separator()
+        imgui.TextDisabled(('ignored this session (%d):'):format(#ignored_display))
+        for i, disp in ipairs(ignored_display) do
+            imgui.PushID('ign_list_' .. i)
+            if imgui.SmallButton('unignore') then
+                ignored[disp:lower()] = nil
+            end
+            imgui.PopID()
+            imgui.SameLine()
+            imgui.Text(disp)
         end
     end
 end
@@ -1213,11 +1236,11 @@ end
 local function cmd_ignore(name)
     if not name or name == '' then
         local any = false
-        for n, _ in pairs(ignored) do any = true; say('  ' .. n) end
+        for _, disp in pairs(ignored) do any = true; say('  ' .. disp) end
         if not any then say('no ignored mobs this session') end
         return
     end
-    ignored[name:lower()] = true
+    ignored[name:lower()] = name
     local kept = T{}
     for _, k in ipairs(kills) do
         if k.name:lower() ~= name:lower() then table.insert(kept, k) end
