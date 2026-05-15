@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.2.2'
+addon.version   = '0.3.0'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -347,23 +347,90 @@ local function bar_rgba(c)
     return { c[1], c[2], c[3], 1.0 }
 end
 
-local function draw_respawn_body()
+----------------------------------------------------------------
+-- config tab: tracking + arcs toggles, default respawn editor,
+-- per-mob overrides, colors & thresholds, arc visibility.
+----------------------------------------------------------------
+local function draw_config_tab()
+    imgui.TextDisabled('changes save immediately')
+    imgui.Separator()
+
+    -- Default respawn timer. 349s = 5m 49s, the measured HorizonXI claim-mob
+    -- value. Editable so dungeon mobs / NMs / non-claim zones can override.
+    -- InputInt buffer keeps the raw value; we display mm:ss alongside.
+    local dr = { config.default_respawn or 349 }
+    if imgui.InputInt('default respawn (s)', dr, 1, 30) then
+        if dr[1] < 1 then dr[1] = 1 end
+        if dr[1] > 86400 then dr[1] = 86400 end
+        config.default_respawn = dr[1]
+        save()
+    end
+    imgui.SameLine()
+    imgui.TextDisabled('(' .. fmt_eta(config.default_respawn or 349) .. ')')
+    if imgui.SmallButton('reset to 5m 49s') then
+        config.default_respawn = 349
+        save()
+    end
+
+    imgui.Separator()
+
+    -- Toggles
     local tr = { config.track_respawns }
-    if imgui.Checkbox('tracking', tr) then
+    if imgui.Checkbox('tracking enabled', tr) then
         config.track_respawns = tr[1]; save()
     end
     if drawArc then
-        imgui.SameLine()
         local rl = { config.respawn_lines }
         if imgui.Checkbox('return arcs', rl) then
             config.respawn_lines = rl[1]; save()
         end
+        local v = { config.arc_show_above_elapsed_pct or 0 }
+        if imgui.SliderInt('arcs visible above', v, 0, 100, '%d%% elapsed') then
+            config.arc_show_above_elapsed_pct = v[1]; save()
+        end
+        imgui.TextDisabled('0% = always, 75% = only the last quarter')
     end
 
-    -- Collapsed by default. Bands run by % ELAPSED of the respawn window:
-    -- red = fresh kill (cooling corpse) → cools through orange/yellow/green
-    -- /blue as time matures → purple at ready (pop time). Click any swatch
-    -- to repaint it however you want -- the names are just defaults.
+    imgui.Separator()
+
+    -- Per-mob overrides. List sorted alphabetically; each row has a delete
+    -- button + inline-editable seconds + mm:ss preview. Use /dc add to
+    -- create new entries (cmd line handles quoted names cleanly).
+    if imgui.CollapsingHeader('per-mob overrides') then
+        local names = {}
+        for n, _ in pairs(config.overrides or {}) do table.insert(names, n) end
+        table.sort(names)
+        if #names == 0 then
+            imgui.TextDisabled('none. add via:  /dc add "Mob Name" <secs>')
+        else
+            for _, name in ipairs(names) do
+                imgui.PushID('ov_' .. name)
+                if imgui.SmallButton('x') then
+                    config.overrides[name] = nil
+                    save()
+                    imgui.PopID()
+                else
+                    imgui.SameLine()
+                    local v = { config.overrides[name] or 0 }
+                    imgui.PushItemWidth(80)
+                    if imgui.InputInt('##secs', v, 0, 0) then
+                        if v[1] < 1 then v[1] = 1 end
+                        config.overrides[name] = v[1]
+                        save()
+                    end
+                    imgui.PopItemWidth()
+                    imgui.SameLine()
+                    imgui.Text(('%-22s %s'):format(name, fmt_eta(config.overrides[name] or 0)))
+                    imgui.PopID()
+                end
+            end
+            imgui.TextDisabled('add more via:  /dc add "Mob Name" <secs>')
+        end
+    end
+
+    -- Colors & thresholds. Bands run by % ELAPSED of the respawn window:
+    -- red = fresh kill (cooling corpse) cools through orange/yellow/green/
+    -- blue as time matures, then purple at ready. Click any swatch to repaint.
     if imgui.CollapsingHeader('colors & thresholds') then
         imgui.TextDisabled('click any swatch to pick a color')
         local band_order = { 'red', 'orange', 'yellow', 'green', 'blue', 'purple' }
@@ -384,10 +451,8 @@ local function draw_respawn_body()
         imgui.Separator()
         imgui.TextDisabled('band kicks in once % elapsed reaches')
 
-        -- Sliders define the LOWER bound for each band, in % of total
-        -- respawn ELAPSED (0 = just died, 100 = ready). Must stay
-        -- monotonically increasing (orange < yellow < green < blue) or
-        -- the bands collapse. Clamp on edit for clear feedback.
+        -- Sliders define LOWER bound for each band, % elapsed. Must stay
+        -- monotonically increasing or bands collapse; clamp on edit.
         local th = config.thresholds
         local function clamp_thresholds()
             if th.yellow <= th.orange then th.yellow = th.orange + 1 end
@@ -398,27 +463,18 @@ local function draw_respawn_body()
             if th.yellow > 97 then th.yellow = 97 end
             if th.orange > 96 then th.orange = 96 end
         end
-        local function slider(label, key, lo, hi)
+        local function slider(label, key)
             local v = { th[key] }
             imgui.PushID('th_' .. key)
-            if imgui.SliderInt(label, v, lo, hi, '%d%%') then
+            if imgui.SliderInt(label, v, 1, 99, '%d%%') then
                 th[key] = v[1]; clamp_thresholds(); save()
             end
             imgui.PopID()
         end
-        slider('orange', 'orange', 1, 99)
-        slider('yellow', 'yellow', 1, 99)
-        slider('green',  'green',  1, 99)
-        slider('blue',   'blue',   1, 99)
-
-        if drawArc then
-            imgui.Separator()
-            local v = { config.arc_show_above_elapsed_pct or 0 }
-            if imgui.SliderInt('arcs visible above', v, 0, 100, '%d%%') then
-                config.arc_show_above_elapsed_pct = v[1]; save()
-            end
-            imgui.TextDisabled('0% = always, 75% = only the last quarter')
-        end
+        slider('orange', 'orange')
+        slider('yellow', 'yellow')
+        slider('green',  'green')
+        slider('blue',   'blue')
 
         if imgui.SmallButton('reset colors & thresholds') then
             config.colors = T{
@@ -433,6 +489,17 @@ local function draw_respawn_body()
             config.arc_show_above_elapsed_pct = 0
             save()
         end
+    end
+end
+
+----------------------------------------------------------------
+-- kills tab: live respawn list. The tracking toggle stays here too
+-- so it's one click away from the data it controls.
+----------------------------------------------------------------
+local function draw_kills_tab()
+    local tr = { config.track_respawns }
+    if imgui.Checkbox('tracking', tr) then
+        config.track_respawns = tr[1]; save()
     end
 
     if not config.track_respawns then
@@ -563,6 +630,23 @@ local function draw_respawn_body()
             imgui.SameLine()
             imgui.TextColored(TEXT_DARK, suffix)
         end
+    end
+end
+
+----------------------------------------------------------------
+-- top-level: tab bar
+----------------------------------------------------------------
+local function draw_respawn_body()
+    if imgui.BeginTabBar('dc_tabs') then
+        if imgui.BeginTabItem('kills') then
+            draw_kills_tab()
+            imgui.EndTabItem()
+        end
+        if imgui.BeginTabItem('config') then
+            draw_config_tab()
+            imgui.EndTabItem()
+        end
+        imgui.EndTabBar()
     end
 end
 
