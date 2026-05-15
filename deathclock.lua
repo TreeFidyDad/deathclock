@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.23'
+addon.version   = '0.3.24'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -107,6 +107,10 @@ local default_settings = T{
     -- following the arc to its endpoint. Off in the rare case the user
     -- doesn't have d3d8/tl_helpers available (graceful fallback).
     arc_labels                 = true,
+    -- Per-window font scale applied to each arc label. 1.0 = ImGui's
+    -- default; 1.5-2.0 reads comfortably from a normal viewing distance.
+    -- Stored as a float and clamped to [0.5, 3.0] in the slider.
+    arc_label_scale            = 1.0,
     -- When true, only mobs that were claimed by the player or someone in
     -- the player's party/alliance at time of death are tracked. Skips
     -- random mobs that someone else killed nearby (the noisy default of a
@@ -551,6 +555,17 @@ local function draw_config_tab()
             local al = { config.arc_labels }
             if imgui.Checkbox('labels', al) then
                 config.arc_labels = al[1]; save()
+            end
+            if config.arc_labels then
+                imgui.SameLine()
+                local sc = { config.arc_label_scale or 1.0 }
+                imgui.PushItemWidth(110)
+                if imgui.SliderFloat('##label_scale', sc, 0.5, 3.0, 'label x%.2f') then
+                    if sc[1] < 0.5 then sc[1] = 0.5 end
+                    if sc[1] > 3.0 then sc[1] = 3.0 end
+                    config.arc_label_scale = sc[1]; save()
+                end
+                imgui.PopItemWidth()
             end
         end
         -- "always" toggle bypasses the threshold below. When checked, the
@@ -1108,6 +1123,8 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                             local wid   = ('##dclbl_%d_%s'):format(k.killed_at or 0, k.name or '')
                             imgui.SetNextWindowPos({ sx + 6, sy - 8 })
                             if imgui.Begin(wid, true, FLAGS) then
+                                local scl = config.arc_label_scale or 1.0
+                                if scl ~= 1.0 then imgui.SetWindowFontScale(scl) end
                                 imgui.TextColored({ rgb[1], rgb[2], rgb[3], 1.0 }, label)
                             end
                             imgui.End()
