@@ -899,45 +899,6 @@ local function draw_kills_tab()
         return COMPASS_ARROWS[bucket + 1]
     end
 
-    -- Urgent banner: same-zone rows in the yellow tier (eta <= 60) get their
-    -- direction+distance promoted above the row list. The in-game /compass
-    -- gets blocked by the attack menu mid-fight; this banner stays visible.
-    -- Capped at 3 so a synchronized respawn wave doesn't fill the window.
-    local urgent = {}
-    if px and py then
-        for _, r in ipairs(rows) do
-            local eta = r.respawn_at - t
-            if eta <= 60 and r.zone == cur_zone and r.x and r.y then
-                local dx = r.x - px
-                local dy = r.y - py
-                local dist = math.sqrt(dx*dx + dy*dy)
-                table.insert(urgent, {
-                    label = r.label,
-                    eta   = eta,
-                    dist  = dist,
-                    dir   = compass_dir(dx, dy),
-                    ready = eta <= 0,
-                })
-            end
-        end
-        table.sort(urgent, function(a, b) return a.eta < b.eta end)
-        while #urgent > 3 do table.remove(urgent) end
-    end
-
-    if #urgent > 0 then
-        for _, u in ipairs(urgent) do
-            local color = u.ready and { 0.4, 1.0, 0.4, 1.0 } or { 1.0, 1.0, 0.4, 1.0 }
-            local text
-            if u.dist >= 5 then
-                text = ('-> %s %.0fy  %s'):format(u.dir, u.dist, u.label)
-            else
-                text = ('* HERE  %s'):format(u.label)
-            end
-            imgui.TextColored(color, text)
-        end
-        imgui.Separator()
-    end
-
     for i, r in ipairs(rows) do
         local eta = r.respawn_at - t
         local total = r.respawn_at - (r.respawn_at - get_respawn_window(r.label:gsub(' #%d+$', '')))
