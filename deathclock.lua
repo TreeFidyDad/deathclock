@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.18'
+addon.version   = '0.3.19'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -962,13 +962,20 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                     local ok, err = pcall(function()
                         local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
                         local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
-                        -- Axis swap to match drawArc: Ashita's entity coords
-                        -- are (x=horizontal, y=depth, z=altitude), but D3D's
-                        -- view/projection expect (x, y=altitude, z=depth).
-                        -- drawArc.lua does the same swap internally; without
-                        -- it the label projects to a wildly wrong world point.
-                        -- Confirmed empirically via /dc labeldebug in v0.3.17.
-                        local sx, sy, sz = tl_helpers.worldToScreen(k.x, k.z, k.y, view, proj)
+                        -- Park the label at the midpoint between player and
+                        -- grave so it rides along the arc -- once you've run
+                        -- away from the death spot the endpoint is far off
+                        -- (or occluded) but the arc midpoint is still on
+                        -- screen and tied to the visible curve.
+                        --
+                        -- Axis swap as before: D3D wants (x, altitude, depth),
+                        -- Ashita gives (x, depth, altitude). Add a small +2
+                        -- lift in D3D-Y so the label sits roughly on the arc
+                        -- peak instead of along the ground line.
+                        local mx = (px + k.x) / 2
+                        local my = (pz + k.z) / 2 + 2
+                        local mz = (py + k.y) / 2
+                        local sx, sy, sz = tl_helpers.worldToScreen(mx, my, mz, view, proj)
                         if sx and sz and sz > 0 and sz < 1 then
                             local label = (eta <= 0)
                                 and ('%s  READY'):format(k.name)
