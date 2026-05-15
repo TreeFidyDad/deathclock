@@ -1070,6 +1070,16 @@ end
 -- killed first. Each row: name, count, "Xm ago" since last, zone.
 -- Right-click a row for a context menu (reset count / forget NM).
 ----------------------------------------------------------------
+local function fmt_tod(t)
+    if not t or t == 0 then return '' end
+    local today = os.date('*t')
+    local d = os.date('*t', t)
+    if d.year == today.year and d.yday == today.yday then
+        return os.date('%H:%M', t)
+    end
+    return os.date('%m/%d %H:%M', t)
+end
+
 local function fmt_since(secs)
     if secs < 60 then return ('%ds ago'):format(secs) end
     if secs < 3600 then return ('%dm ago'):format(math.floor(secs / 60)) end
@@ -1103,10 +1113,17 @@ local function draw_nms_tab()
     for _, r in ipairs(rows) do
         local since = t_now - r.last
         local zname = (r.last_zone > 0) and get_zone_name(r.last_zone) or ''
-        -- Compact line: "Spiny Spipi  x3   12m ago  East Sarutabaruta"
+        local tod = fmt_tod(r.last)
+        -- Compact line: "Spiny Spipi  x3   ToD 14:32 · 12m ago · East Sarutabaruta"
         imgui.Text(('%s  x%d'):format(r.name, r.count))
         imgui.SameLine()
-        imgui.TextDisabled(('%s  %s'):format(fmt_since(since), zname))
+        local rhs
+        if zname ~= '' then
+            rhs = ('ToD %s  ·  %s  ·  %s'):format(tod, fmt_since(since), zname)
+        else
+            rhs = ('ToD %s  ·  %s'):format(tod, fmt_since(since))
+        end
+        imgui.TextDisabled(rhs)
 
         -- Right-click context menu, keyed per row so it doesn't open for
         -- the whole tab. ID stem is `##nmctx_<name>` for uniqueness.
