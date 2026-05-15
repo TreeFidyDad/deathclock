@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.2.1'
+addon.version   = '0.2.2'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -16,7 +16,7 @@ local imgui    = require('imgui')
 -- Vendored targetlines drawArc machinery for in-world respawn return-lines.
 -- See vendor/targetlines/NOTICE.md for source/attribution. Loaded under
 -- pcall so a binding mismatch on d3d8/ffi can't keep deathclock from
--- loading at all — without drawArc, lines just don't render and every
+-- loading at all -- without drawArc, lines just don't render and every
 -- other feature still works.
 local _tl_root = string.format('%s\\vendor\\targetlines', addon.path)
 package.path = string.format('%s\\?.lua;%s', _tl_root, package.path)
@@ -36,13 +36,13 @@ local default_settings = T{
         y = 100,
         w = 340,
     },
-    -- 5m 49s — measured on HorizonXI for claim mobs.
+    -- 5m 49s -- measured on HorizonXI for claim mobs.
     default_respawn         = 349,
     overrides               = T{},
     keep_dead_after_respawn = 30,
     track_respawns          = true,
     respawn_lines           = true,
-    -- (legacy `respawn_lines_show_all` intentionally NOT in defaults — its
+    -- (legacy `respawn_lines_show_all` intentionally NOT in defaults -- its
     -- presence in a loaded XML is the signal that the user predates v0.2.0
     -- and needs the arc_show_below_pct migration.)
 
@@ -89,7 +89,7 @@ end
 -- v0.2.0 migration: legacy boolean `respawn_lines_show_all` becomes the
 -- continuous `arc_show_above_elapsed_pct` (was briefly `arc_show_below_pct`
 -- in v0.2.0). False (the old default) meant "only green and yellow arcs"
--- — yellow was eta<=60s, roughly the last 20% of a 349s timer. Map false →
+-- -- yellow was eta<=60s, roughly the last 20% of a 349s timer. Map false →
 -- show only when elapsed >= 80 (last fifth), true → 0 (always show).
 -- Sentinel prevents re-applying.
 if not config._arc_pct_migrated then
@@ -120,7 +120,7 @@ if not config._v021_axis_flip then
     if config.thresholds then
         local th = config.thresholds
         -- Detect v0.2.0 shape by the presence of blue >= 50 (v0.2.1 default
-        -- blue is 80; v0.2.0 default blue is 75 — both > 50). If the user
+        -- blue is 80; v0.2.0 default blue is 75 -- both > 50). If the user
         -- never opened the panel, the values match v0.2.0 defaults and
         -- need flipping; if they did customize, we still flip because the
         -- axis itself inverted.
@@ -363,7 +363,7 @@ local function draw_respawn_body()
     -- Collapsed by default. Bands run by % ELAPSED of the respawn window:
     -- red = fresh kill (cooling corpse) → cools through orange/yellow/green
     -- /blue as time matures → purple at ready (pop time). Click any swatch
-    -- to repaint it however you want — the names are just defaults.
+    -- to repaint it however you want -- the names are just defaults.
     if imgui.CollapsingHeader('colors & thresholds') then
         imgui.TextDisabled('click any swatch to pick a color')
         local band_order = { 'red', 'orange', 'yellow', 'green', 'blue', 'purple' }
@@ -449,7 +449,7 @@ local function draw_respawn_body()
     local cur_zone = get_zone_id()
 
     -- Player position via party-member-0 target index (the local player's
-    -- actual entity index — slot 0 of the entity table is unreliable).
+    -- actual entity index -- slot 0 of the entity table is unreliable).
     -- FFXI/Ashita convention: +X = east, -X = west, +Y = north, -Y = south.
     local px, py
     pcall(function()
@@ -799,5 +799,5 @@ ashita.events.register('command', 'dc_command_cb', function(e)
 end)
 
 ashita.events.register('load', 'dc_load_cb', function()
-    say(('deathclock v%s loaded — /dc help'):format(addon.version))
+    say(('deathclock v%s loaded -- /dc help'):format(addon.version))
 end)
