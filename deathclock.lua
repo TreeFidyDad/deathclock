@@ -65,6 +65,18 @@ local default_settings = T{
     -- spawn model (lottery/window/force-pop) doesn't fit a fixed timer.
     nms                     = T{},
     nm_kills                = T{},
+    -- Spawn-slot observation log. Server IDs are stable per spawn point in
+    -- FFXI; the same slot can host an NM or its placeholder depending on
+    -- the lottery outcome. By recording (server_id -> {names_observed}) we
+    -- can later infer placeholder relationships: any non-Notorious name
+    -- observed in the same slot as a known NM is a PH for it.
+    -- Schema: slot_map[server_id_str] = {
+    --   zone = zone_id, last_seen = unix_ts,
+    --   names = { [mob_name] = { count = N, last = unix_ts } }
+    -- }
+    -- Server ID is stored as a decimal STRING key (Ashita settings can be
+    -- inconsistent with huge int keys; strings round-trip cleanly).
+    slot_map                = T{},
     -- When mobdb is installed, look up per-mob Notorious flag
     -- from its zone data files. Toggle off if it causes problems.
     use_mobdb               = true,
@@ -363,8 +375,26 @@ local function get_respawn_window(name)
     return config.overrides[name] or config.default_respawn
 end
 
-local function record_kill(name, x, y, z)
+local function record_kill(name, server_id, x, y, z)
     if is_ignored(name) then return end
+    -- Capture spawn-slot observation BEFORE any early returns. We want
+    -- slot data for NMs too -- that's literally the point (knowing a slot
+    -- hosted both Crawler and Spiny Spipi is what proves PH relationship).
+    if server_id and server_id ~= 0 then
+        local key = tostring(server_id)
+        config.slot_map = config.slot_map or T{}
+        local slot = config.slot_map[key]
+        if not slot then
+            slot = T{ zone = get_zone_id(), names = T{}, last_seen = 0 }
+            config.slot_map[key] = slot
+        end
+        local n = slot.names[name] or T{ count = 0, last = 0 }
+        n.count = (n.count or 0) + 1
+        n.last  = now()
+        slot.names[name] = n
+        slot.last_seen   = now()
+        slot.zone        = get_zone_id()
+    end
     -- Already-known NM -> handled by the NM tab, not the respawn list.
     if config.nms[name] then return end
     -- New mobdb-detected NM -> promote on the spot. More reliable than the
@@ -577,13 +607,14 @@ local function scan_for_deaths()
                 last_seen_claim = credit_claim
                 local mine = claim_is_mine(credit_claim)
                 if (not config.only_my_kills) or mine then
-                    local x, y, z
+                    local x, y, z, sid
                     pcall(function()
                         x = entities:GetLocalPositionX(i)
                         y = entities:GetLocalPositionY(i)
                         z = entities:GetLocalPositionZ(i)
+                        sid = entities:GetServerId(i)
                     end)
-                    record_kill(name, x, y, z)
+                    record_kill(name, sid, x, y, z)
                 else
                     last_filter_skip = ('%s claim=0x%x'):format(name, credit_claim)
                 end
@@ -1797,7 +1828,48 @@ local function handle(args, raw, prefix_word_count)
             say('/dc nm list | add <name> | tod <name> now|<min>|HH:MM | reset [name|all] | forget <name>')
         end
     elseif sub == 'test' then
-        record_kill('TestMob')
+        record_kill('TestMob', nil)
+    elseif sub == 'slots' then
+        -- Inspect the spawn-slot observation log. Foundation for the
+        -- placeholder-learning feature: any slot showing both an NM and a
+        -- non-NM has identified that non-NM as the PH.
+        local action = args[2 + prefix_word_count]
+        if action == 'clear' then
+            config.slot_map = T{}
+            save()
+            say('slot_map cleared')
+        else
+            local count = 0
+            local with_nms = 0
+            for sid, slot in pairs(config.slot_map or {}) do
+                count = count + 1
+                local names = {}
+                local has_nm = false
+                for n, _ in pairs(slot.names or {}) do
+                    table.insert(names, n)
+                    if config.nms[n] then has_nm = true end
+                end
+                if has_nm and #names > 1 then
+                    with_nms = with_nms + 1
+                    say(('  0x%08x [%s]: %s'):format(tonumber(sid), slot.zone or 0, table.concat(names, ', ')))
+                end
+            end
+            say(('slot_map: %d slots tracked, %d with PH evidence'):format(count, with_nms))
+            if action ~= 'verbose' then
+                say('  (use /dc slots verbose to dump all, /dc slots clear to reset)')
+            elseif count > 0 and with_nms == 0 then
+                say('  no slot has been seen as both NM and non-NM yet -- kill some PHs first')
+            end
+            if action == 'verbose' then
+                for sid, slot in pairs(config.slot_map or {}) do
+                    local parts = {}
+                    for n, rec in pairs(slot.names or {}) do
+                        table.insert(parts, ('%s x%d'):format(n, rec.count or 1))
+                    end
+                    say(('  0x%08x [%s]: %s'):format(tonumber(sid), slot.zone or 0, table.concat(parts, ', ')))
+                end
+            end
+        end
     elseif sub == 'lines' then
         config.respawn_lines = not config.respawn_lines
         save()
