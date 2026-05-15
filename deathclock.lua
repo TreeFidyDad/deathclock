@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.12'
+addon.version   = '0.3.13'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -531,8 +531,10 @@ local function draw_config_tab()
     do
         local kd = math.max(0, config.keep_dead_after_respawn or 30)
         local kv = { kd }
-        imgui.PushItemWidth(55)
-        if imgui.InputInt('keep pop visible (s)', kv, 5, 30) then
+        imgui.PushItemWidth(60)
+        -- step=0 step_fast=0 hides the +/- buttons; with them on at width 55
+        -- the buttons ate the digit field and the number was clipped.
+        if imgui.InputInt('keep pop visible (s)', kv, 0, 0) then
             if kv[1] < 0 then kv[1] = 0 end
             config.keep_dead_after_respawn = kv[1]; save()
         end
