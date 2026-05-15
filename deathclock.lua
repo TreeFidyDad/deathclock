@@ -1471,6 +1471,45 @@ local function handle(args, raw, prefix_word_count)
                     say(('no NM record for "%s" -- check spelling, names are case-sensitive'):format(target))
                 end
             end
+        elseif action == 'add' then
+            -- /dc nm add <name>  -- promote an existing kill-list entry (or unseen mob)
+            -- to the NMs tab. Sweeps the kills list regardless of age and seeds count=1.
+            local rest_start = 0
+            for i = 1, prefix_word_count + 2 do
+                rest_start = rest_start + #args[i] + 1
+            end
+            local target = raw:sub(rest_start + 1):gsub('^%s+', ''):gsub('%s+$', '')
+            if target == '' then
+                say('usage: /dc nm add <name>')
+            else
+                local t_now = now()
+                local rec = config.nm_kills[target] or T{ count = 0, first = t_now, last = 0, last_zone = 0 }
+                local was_new = not config.nms[target]
+                config.nms[target] = true
+                rec.count     = (rec.count or 0) + 1
+                rec.first     = rec.first or t_now
+                rec.last      = t_now
+                rec.last_zone = get_zone_id()
+                config.nm_kills[target] = rec
+                local removed = 0
+                local kept = T{}
+                for _, k in ipairs(kills) do
+                    if k.name == target then
+                        removed = removed + 1
+                    else
+                        table.insert(kept, k)
+                    end
+                end
+                kills = kept
+                save()
+                if was_new then
+                    say(('%s flagged as NM (count=%d, %d stale kill entr%s swept)'):format(
+                        target, rec.count, removed, removed == 1 and 'y' or 'ies'))
+                else
+                    say(('%s NM count bumped to %d (%d stale kill entr%s swept)'):format(
+                        target, rec.count, removed, removed == 1 and 'y' or 'ies'))
+                end
+            end
         elseif action == 'forget' then
             local rest_start = 0
             for i = 1, prefix_word_count + 2 do
@@ -1486,7 +1525,7 @@ local function handle(args, raw, prefix_word_count)
                 say(('un-flagged %s as NM'):format(target))
             end
         else
-            say('/dc nm list | reset [name|all] | forget <name>')
+            say('/dc nm list | add <name> | reset [name|all] | forget <name>')
         end
     elseif sub == 'test' then
         record_kill('TestMob')
