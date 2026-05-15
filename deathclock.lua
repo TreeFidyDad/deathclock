@@ -678,7 +678,7 @@ local function build_respawn_rows()
         end
         table.insert(rows, {
             label = label, name = k.name, respawn_at = k.respawn_at, zone = k.zone,
-            x = k.x, y = k.y, z = k.z,
+            x = k.x, y = k.y, z = k.z, server_id = k.server_id,
         })
     end
     table.sort(rows, function(a, b) return a.respawn_at < b.respawn_at end)
@@ -1124,6 +1124,23 @@ end
 -- kills tab: live respawn list. The tracking toggle stays here too
 -- so it's one click away from the data it controls.
 ----------------------------------------------------------------
+-- PH lookup helper for the kills tab. Given a kill's server_id, return the
+-- list of NM names this slot has previously hosted (excluding the kill's
+-- own name -- we don't flag NM kills as PHs for themselves). Empty list
+-- means "no PH evidence", so callers can just check `#result > 0`.
+local function ph_nms_for_slot(server_id, name)
+    local out = {}
+    if not server_id or server_id == 0 then return out end
+    local slot = config.slot_map and config.slot_map[tostring(server_id)]
+    if not slot or not slot.names then return out end
+    for n, _ in pairs(slot.names) do
+        if n ~= name and config.nms[n] then
+            table.insert(out, n)
+        end
+    end
+    return out
+end
+
 local function draw_kills_tab()
     local tr = { config.track_respawns }
     if imgui.Checkbox('tracking', tr) then
@@ -1256,7 +1273,15 @@ local function draw_kills_tab()
         -- yellow tier and washes out on green; near-black holds contrast
         -- across all three urgency colors.
         local TEXT_DARK = { 0.05, 0.05, 0.05, 1.0 }
-        imgui.TextColored(TEXT_DARK, ('%-22s  %s'):format(r.label, fmt_eta(eta)))
+        local ph_nms = ph_nms_for_slot(r.server_id, r.name)
+        local display_label = r.label
+        if #ph_nms > 0 then
+            display_label = '[PH] ' .. r.label
+        end
+        imgui.TextColored(TEXT_DARK, ('%-22s  %s'):format(display_label, fmt_eta(eta)))
+        if #ph_nms > 0 and imgui.IsItemHovered() then
+            imgui.SetTooltip(('Placeholder for: %s'):format(table.concat(ph_nms, ', ')))
+        end
         if r.zone ~= cur_zone then
             imgui.SameLine()
             imgui.TextColored(TEXT_DARK, ' (' .. get_zone_name(r.zone) .. ')')
