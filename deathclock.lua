@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.6'
+addon.version   = '0.3.7'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -582,7 +582,10 @@ local function draw_config_tab()
             if c then
                 local tmp = { c[1], c[2], c[3] }
                 imgui.PushID('band_' .. name)
-                if imgui.ColorEdit3('##swatch', tmp) then
+                -- ImGuiColorEditFlags_NoInputs (1<<5 = 32): hide R/G/B
+                -- numeric fields, leaving just the clickable swatch. The
+                -- full picker (HSV/hex/wheel) still opens on click.
+                if imgui.ColorEdit3('##swatch', tmp, 32) then
                     config.colors[name] = T{ tmp[1], tmp[2], tmp[3] }; save()
                 end
                 imgui.SameLine()
