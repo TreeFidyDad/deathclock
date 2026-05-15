@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.0'
+addon.version   = '0.3.1'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -60,6 +60,12 @@ local default_settings = T{
         blue   = T{ 0.35, 0.55, 1.00 },
         purple = T{ 0.80, 0.40, 1.00 },
     },
+    -- How many color bands are active. 1 = single color always. 2 = one
+    -- timer color plus a distinct "ready" color (eta<=0). 3-6 = spectrum
+    -- across the timer with the final slot reserved for ready. Each slot
+    -- is independently recolorable, so any palette (monochrome, black/
+    -- white/brown, autumn, whatever) is achievable.
+    color_count = 6,
     -- Thresholds are the LOWER bound (% of total respawn ELAPSED) for each
     -- band. Going up: >= blue → blue, >= green → green, ..., otherwise red.
     -- Must stay monotonically increasing; clamped on slider edit. Red is
@@ -312,11 +318,45 @@ local function build_respawn_rows()
     return rows
 end
 
+-- Color band ordering, fresh kill -> ready. Used by color_for() and the
+-- config UI. THRESHOLD_ORDER[i] is the lower-bound threshold for the
+-- (i+1)-th timer band; final slot ('purple') is gated by eta<=0, not a %.
+local BAND_ORDER       = { 'red', 'orange', 'yellow', 'green', 'blue', 'purple' }
+local THRESHOLD_ORDER  = { 'orange', 'yellow', 'green', 'blue' }
+
+-- Resolve the configured color_count into the actual list of band names
+-- to use. count=1 -> {red} (single color, no ready distinction).
+-- count>=2 -> first (count-1) timer bands + purple as the ready slot.
+local function active_bands()
+    local n = math.max(1, math.min(6, config.color_count or 6))
+    if n == 1 then return { BAND_ORDER[1] } end
+    local b = {}
+    for i = 1, n - 1 do b[i] = BAND_ORDER[i] end
+    b[n] = 'purple'
+    return b
+end
+
+-- Evenly distribute the active thresholds across [0,100]. Called when
+-- color_count changes so going (say) 6 -> 3 gives a sensible 50/50 split
+-- instead of leaving the lone active threshold at its old 20% value.
+local function redistribute_thresholds(n)
+    if n <= 2 then return end
+    local timer_bands = n - 1
+    local th = config.thresholds
+    for i = 1, n - 2 do
+        th[THRESHOLD_ORDER[i]] = math.floor(100 * i / timer_bands + 0.5)
+    end
+end
+
 -- Pick the band for a kill based on elapsed fraction of its respawn window.
--- eta <= 0 → purple (pop time). Otherwise highest threshold whose floor
--- the elapsed % has crossed. Red is the floor (everything below orange).
+-- Final band (purple) is special: eta<=0 (pop time). Other bands cascade
+-- top-down by %-elapsed threshold. count=1 short-circuits to the single
+-- slot regardless of state.
 local function color_for(eta, total)
-    if eta <= 0 then return config.colors.purple end
+    local bands = active_bands()
+    local n = #bands
+    if n == 1 then return config.colors[bands[1]] end
+    if eta <= 0 then return config.colors[bands[n]] end
     local pct_elapsed
     if total and total > 0 then
         pct_elapsed = math.max(0, math.min(100, (total - eta) / total * 100))
@@ -324,11 +364,11 @@ local function color_for(eta, total)
         pct_elapsed = 0
     end
     local th = config.thresholds
-    if pct_elapsed >= (th.blue   or 80) then return config.colors.blue   end
-    if pct_elapsed >= (th.green  or 60) then return config.colors.green  end
-    if pct_elapsed >= (th.yellow or 40) then return config.colors.yellow end
-    if pct_elapsed >= (th.orange or 20) then return config.colors.orange end
-    return config.colors.red
+    for i = n - 1, 2, -1 do
+        local key = THRESHOLD_ORDER[i - 1]
+        if pct_elapsed >= (th[key] or 0) then return config.colors[bands[i]] end
+    end
+    return config.colors[bands[1]]
 end
 
 -- ImGui RGB floats → drawArc ARGB uint32. Alpha hardcoded to 0xC0 (~75%):
@@ -432,9 +472,22 @@ local function draw_config_tab()
     -- red = fresh kill (cooling corpse) cools through orange/yellow/green/
     -- blue as time matures, then purple at ready. Click any swatch to repaint.
     if imgui.CollapsingHeader('colors & thresholds') then
-        imgui.TextDisabled('click any swatch to pick a color')
-        local band_order = { 'red', 'orange', 'yellow', 'green', 'blue', 'purple' }
-        for _, name in ipairs(band_order) do
+        -- How many bands. 1 = always one color (no state change ever).
+        -- 2 = one color while waiting + a distinct ready color. 3-6 =
+        -- spectrum across the timer with the last slot as ready. Changing
+        -- this redistributes thresholds evenly so the split is sensible.
+        local nn = { math.max(1, math.min(6, config.color_count or 6)) }
+        if imgui.SliderInt('color count', nn, 1, 6) then
+            config.color_count = nn[1]
+            redistribute_thresholds(nn[1])
+            save()
+        end
+        imgui.TextDisabled('1 = single color, 2 = waiting + ready, 3-6 = spectrum')
+        imgui.Separator()
+
+        imgui.TextDisabled('click any swatch to pick a color (any RGB)')
+        local bands = active_bands()
+        for i, name in ipairs(bands) do
             local c = config.colors[name]
             if c then
                 local tmp = { c[1], c[2], c[3] }
@@ -444,37 +497,54 @@ local function draw_config_tab()
                 end
                 imgui.PopID()
                 imgui.SameLine()
-                imgui.Text(name)
+                local label = name
+                if #bands == 1 then
+                    label = name .. '  (always)'
+                elseif i == #bands then
+                    label = name .. '  (ready)'
+                elseif i == 1 then
+                    label = name .. '  (fresh kill)'
+                end
+                imgui.Text(label)
             end
         end
 
-        imgui.Separator()
-        imgui.TextDisabled('band kicks in once % elapsed reaches')
-
-        -- Sliders define LOWER bound for each band, % elapsed. Must stay
-        -- monotonically increasing or bands collapse; clamp on edit.
-        local th = config.thresholds
-        local function clamp_thresholds()
-            if th.yellow <= th.orange then th.yellow = th.orange + 1 end
-            if th.green  <= th.yellow then th.green  = th.yellow + 1 end
-            if th.blue   <= th.green  then th.blue   = th.green  + 1 end
-            if th.blue   > 99 then th.blue   = 99 end
-            if th.green  > 98 then th.green  = 98 end
-            if th.yellow > 97 then th.yellow = 97 end
-            if th.orange > 96 then th.orange = 96 end
-        end
-        local function slider(label, key)
-            local v = { th[key] }
-            imgui.PushID('th_' .. key)
-            if imgui.SliderInt(label, v, 1, 99, '%d%%') then
-                th[key] = v[1]; clamp_thresholds(); save()
+        -- Thresholds. count=1 has none (single color). count=2 has none
+        -- (the split is eta<=0, not a %). count>=3 exposes (count-2)
+        -- sliders, one between each pair of adjacent timer bands.
+        local n = #bands
+        if n >= 3 then
+            imgui.Separator()
+            imgui.TextDisabled('band kicks in once % elapsed reaches')
+            local th = config.thresholds
+            local active_keys = {}
+            for i = 1, n - 2 do active_keys[i] = THRESHOLD_ORDER[i] end
+            -- Clamp pass: enforce strict monotonic increase from the
+            -- bottom up, then ceiling-cap from the top down so high-end
+            -- sliders can't pin everything against 99 and force lower
+            -- ones into invalid territory.
+            local function clamp_thresholds()
+                for i = 2, #active_keys do
+                    local prev_k, k = active_keys[i-1], active_keys[i]
+                    if th[k] <= th[prev_k] then th[k] = th[prev_k] + 1 end
+                end
+                local ceiling = 99
+                for i = #active_keys, 1, -1 do
+                    local k = active_keys[i]
+                    if th[k] > ceiling then th[k] = ceiling end
+                    ceiling = ceiling - 1
+                end
             end
-            imgui.PopID()
+            for i, key in ipairs(active_keys) do
+                local v = { th[key] }
+                imgui.PushID('th_' .. key)
+                -- Label slider with the band it gates into (bands[i+1]).
+                if imgui.SliderInt(bands[i+1], v, 1, 99, '%d%%') then
+                    th[key] = v[1]; clamp_thresholds(); save()
+                end
+                imgui.PopID()
+            end
         end
-        slider('orange', 'orange')
-        slider('yellow', 'yellow')
-        slider('green',  'green')
-        slider('blue',   'blue')
 
         if imgui.SmallButton('reset colors & thresholds') then
             config.colors = T{
@@ -486,6 +556,7 @@ local function draw_config_tab()
                 purple = T{ 0.80, 0.40, 1.00 },
             }
             config.thresholds = T{ orange = 20, yellow = 40, green = 60, blue = 80 }
+            config.color_count = 6
             config.arc_show_above_elapsed_pct = 0
             save()
         end
