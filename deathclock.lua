@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.4'
+addon.version   = '0.3.5'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -552,8 +552,9 @@ local function draw_config_tab()
         end
 
         -- One row per band: swatch + name + (if not the first band) its
-        -- threshold slider with mm:ss preview. First band is the floor
-        -- (0% elapsed implicit) so it shows "(fresh kill, 0%)" instead.
+        -- threshold slider, an editable "seconds remaining" InputInt, and
+        -- an mm:ss readout. First band is the implicit 0% floor so it
+        -- shows "(fresh kill, from 0:00)" with no controls.
         for i, name in ipairs(bands) do
             local c = config.colors[name]
             if c then
@@ -567,26 +568,44 @@ local function draw_config_tab()
                 if n == 1 then
                     imgui.Text(name .. '  (always)')
                 elseif i == 1 then
-                    -- Fresh-kill floor: no slider, but show it in the list
-                    -- so the row layout reads cleanly top-to-bottom.
                     imgui.Text(('%s  (fresh kill, from 0:00)'):format(name))
                 else
-                    local key = THRESHOLD_ORDER[i - 1]
+                    local key   = THRESHOLD_ORDER[i - 1]
+                    local hi    = (i == n) and 100 or 99
+                    -- Slider: % elapsed at which this band kicks in.
                     local v = { th[key] }
-                    local hi = (i == n) and 100 or 99
-                    imgui.PushItemWidth(140)
+                    imgui.PushItemWidth(110)
                     if imgui.SliderInt(name, v, 1, hi, '%d%%') then
                         th[key] = v[1]; clamp_thresholds(); save()
                     end
                     imgui.PopItemWidth()
+                    -- Editable seconds-remaining: paired view of the same
+                    -- threshold against the default respawn. Editing this
+                    -- field snaps the slider, and vice versa. Per-mob
+                    -- overrides scale proportionally at draw time.
                     imgui.SameLine()
-                    local remaining = math.floor(total_secs * (1 - (th[key] or 0) / 100) + 0.5)
-                    if i == n and (th[key] or 0) >= 100 then
-                        imgui.TextDisabled('(ready: only at pop)')
+                    local cur_pct   = th[key] or 0
+                    local remaining = math.floor(total_secs * (1 - cur_pct / 100) + 0.5)
+                    local rv = { remaining }
+                    imgui.PushItemWidth(55)
+                    if imgui.InputInt('##secs', rv, 0, 0) then
+                        if rv[1] < 0 then rv[1] = 0 end
+                        if rv[1] > total_secs then rv[1] = total_secs end
+                        local new_pct = math.floor((1 - rv[1] / total_secs) * 100 + 0.5)
+                        if new_pct < 1   then new_pct = 1   end
+                        if new_pct > hi  then new_pct = hi  end
+                        th[key] = new_pct; clamp_thresholds(); save()
+                    end
+                    imgui.PopItemWidth()
+                    imgui.SameLine()
+                    local final_pct = th[key] or 0
+                    local final_rem = math.floor(total_secs * (1 - final_pct / 100) + 0.5)
+                    if i == n and final_pct >= 100 then
+                        imgui.TextDisabled('s (only at pop)')
                     elseif i == n then
-                        imgui.TextDisabled(('(ready at %s left)'):format(fmt_eta(remaining)))
+                        imgui.TextDisabled(('s left = %s ready'):format(fmt_eta(final_rem)))
                     else
-                        imgui.TextDisabled(('(at %s left)'):format(fmt_eta(remaining)))
+                        imgui.TextDisabled(('s left = %s'):format(fmt_eta(final_rem)))
                     end
                 end
                 imgui.PopID()
