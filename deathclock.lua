@@ -1169,7 +1169,8 @@ end
 -- Module-scoped buffer for the "Add NM" text input. Lives outside
 -- draw_nms_tab so the typed-but-not-submitted text persists across frames.
 local nm_add_buf = { '' }
--- Per-NM buffers for the ToD-edit popup (keyed by name). Lazily created.
+-- Per-NM string buffers for the ToD-edit popup (keyed by name).
+-- Stores an "HH:MM" string. Lazily seeded on popup open.
 local nm_tod_buf = {}
 
 local function draw_nms_tab()
@@ -1239,9 +1240,9 @@ local function draw_nms_tab()
         if imgui.IsItemHovered() then imgui.SetTooltip('Un-flag as NM (future kills go back to respawn list)') end
         imgui.SameLine()
         if imgui.SmallButton('ToD') then
-            -- Pre-seed the input with the current minutes-since-last.
-            nm_tod_buf[r.name] = nm_tod_buf[r.name] or { 0 }
-            nm_tod_buf[r.name][1] = math.floor(since / 60)
+            -- Seed input with the row's current ToD as HH:MM (24hr local).
+            nm_tod_buf[r.name] = nm_tod_buf[r.name] or { '' }
+            nm_tod_buf[r.name][1] = os.date('%H:%M', r.last)
             imgui.OpenPopup('##tod_edit_' .. r.name)
         end
         if imgui.IsItemHovered() then imgui.SetTooltip('Edit ToD (word-of-mouth)') end
@@ -1249,16 +1250,16 @@ local function draw_nms_tab()
 
         if imgui.BeginPopup('##tod_edit_' .. r.name) then
             imgui.Text(('Set ToD for %s'):format(r.name))
+            imgui.TextDisabled('24hr local time. If the time is in the future, it')
+            imgui.TextDisabled('is interpreted as yesterday at that time.')
             imgui.Separator()
             local buf = nm_tod_buf[r.name]
             imgui.PushItemWidth(80)
-            if imgui.InputInt('minutes ago', buf, 1, 5) then
-                if buf[1] < 0 then buf[1] = 0 end
-                if buf[1] > 1440 then buf[1] = 1440 end
-            end
+            local submitted = imgui.InputText('HH:MM', buf, 8, 32) -- 32 = EnterReturnsTrue
             imgui.PopItemWidth()
-            if imgui.Button('Apply') then
-                set_nm_tod(r.name, tostring(buf[1]))
+            if submitted or imgui.Button('Apply') then
+                local ok, _, err = set_nm_tod(r.name, buf[1])
+                if not ok and err then say(err) end
                 imgui.CloseCurrentPopup()
             end
             imgui.SameLine()
