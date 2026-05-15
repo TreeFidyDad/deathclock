@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.8'
+addon.version   = '0.3.9'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -812,7 +812,11 @@ local function draw_window()
     if not config.window.visible then return end
     imgui.SetNextWindowSize({ config.window.w, 0 }, ImGuiCond_FirstUseEver)
     imgui.SetNextWindowPos({ config.window.x, config.window.y }, ImGuiCond_FirstUseEver)
-    if imgui.Begin('Deathclock', true) then
+    -- ImGuiWindowFlags_AlwaysAutoResize (1<<6 = 64): the window shrink-
+    -- wraps its current content every frame. Switching tabs (kills vs
+    -- config) or collapsing/expanding the colors panel resizes the
+    -- window to match, so the empty kills tab is no longer huge.
+    if imgui.Begin('Deathclock', true, 64) then
         draw_respawn_body()
         local px, py = imgui.GetWindowPos()
         if px ~= config.window.x or py ~= config.window.y then
