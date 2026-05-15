@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.11'
+addon.version   = '0.3.12'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -935,30 +935,33 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                 else
                     pct_elapsed = 100
                 end
-                if eta <= 0 or config.arc_always_on or pct_elapsed >= thr_pct then
-                    local rgb   = color_for(eta, total)
-                    local color = rgb_to_argb(rgb)
-                    drawArc(px, py, pz, k.x, k.y, k.z, color, 1)
-                    -- Float the mob name + eta over the death point. Project
-                    -- world->screen via the same matrices drawArc uses; skip
-                    -- when behind camera (ndcZ outside [0,1]) so labels don't
-                    -- bleed onto the wrong side of the screen.
-                    if config.arc_labels and tl_helpers and d3d8dev and d3dC then
-                        local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
-                        local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
-                        local sx, sy, sz = tl_helpers.worldToScreen(k.x, k.y, k.z, view, proj)
-                        if sx and sz and sz > 0 and sz < 1 then
-                            local label = (eta <= 0)
-                                and ('%s  READY'):format(k.name)
-                                or  ('%s  %s'):format(k.name, fmt_eta(math.floor(eta)))
-                            local col = rgb_to_imu32(rgb)
-                            local dl  = imgui.GetBackgroundDrawList()
-                            if dl then
-                                -- 1px black drop-shadow for readability over
-                                -- bright terrain. Cheap, no font atlas work.
-                                dl:AddText({ sx + 7, sy - 7 }, 0xFF000000, label)
-                                dl:AddText({ sx + 6, sy - 8 }, col,        label)
-                            end
+                local rgb       = color_for(eta, total)
+                local show_arc  = eta <= 0
+                                  or config.arc_always_on
+                                  or pct_elapsed >= thr_pct
+                if show_arc then
+                    drawArc(px, py, pz, k.x, k.y, k.z, rgb_to_argb(rgb), 1)
+                end
+                -- Labels are independent of the arc threshold: the mob
+                -- name + eta floats over every active death spot the moment
+                -- the kill is logged, even when the arc itself is still
+                -- hidden by the threshold. Gated only by the `labels`
+                -- checkbox and successful d3d8/tl_helpers/ffi loads.
+                if config.arc_labels and tl_helpers and d3d8dev and d3dC then
+                    local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
+                    local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
+                    local sx, sy, sz = tl_helpers.worldToScreen(k.x, k.y, k.z, view, proj)
+                    if sx and sz and sz > 0 and sz < 1 then
+                        local label = (eta <= 0)
+                            and ('%s  READY'):format(k.name)
+                            or  ('%s  %s'):format(k.name, fmt_eta(math.floor(eta)))
+                        local col = rgb_to_imu32(rgb)
+                        local dl  = imgui.GetBackgroundDrawList()
+                        if dl then
+                            -- 1px black drop-shadow for readability over
+                            -- bright terrain. Cheap, no font atlas work.
+                            dl:AddText({ sx + 7, sy - 7 }, 0xFF000000, label)
+                            dl:AddText({ sx + 6, sy - 8 }, col,        label)
                         end
                     end
                 end
