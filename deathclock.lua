@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.1.1'
+addon.version   = '0.1.2'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -236,7 +236,7 @@ end
 
 local function draw_respawn_body()
     local tr = { config.track_respawns }
-    if imgui.Checkbox('on the clock', tr) then
+    if imgui.Checkbox('tracking', tr) then
         config.track_respawns = tr[1]; save()
     end
     if drawArc then
