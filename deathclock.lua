@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.16'
+addon.version   = '0.3.17'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -962,24 +962,37 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                     local ok, err = pcall(function()
                         local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
                         local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
-                        -- Axis swap to match drawArc: Ashita's entity coords
-                        -- are (x=horizontal, y=depth, z=altitude), but D3D's
-                        -- view/projection expect (x, y=altitude, z=depth).
-                        -- drawArc.lua does the same swap internally
-                        -- (`P0x, P0y, P0z = x1, z1, y1`); without it the label
-                        -- projects to a completely wrong world point.
-                        local sx, sy, sz = tl_helpers.worldToScreen(k.x, k.z, k.y, view, proj)
-                        if sx and sz and sz > 0 and sz < 1 then
-                            local label = (eta <= 0)
-                                and ('%s  READY'):format(k.name)
-                                or  ('%s  %s'):format(k.name, fmt_eta(math.floor(eta)))
-                            local FLAGS  = 13263
-                            local wid    = ('##dclbl_%d_%s'):format(k.killed_at or 0, k.name or '')
-                            imgui.SetNextWindowPos({ sx + 6, sy - 8 })
-                            if imgui.Begin(wid, true, FLAGS) then
-                                imgui.TextColored({ rgb[1], rgb[2], rgb[3], 1.0 }, label)
+                        local FLAGS = 13263
+
+                        local function paint(suffix, wx, wy, wz, text)
+                            local sx, sy, sz = tl_helpers.worldToScreen(wx, wy, wz, view, proj)
+                            if sx and sz and sz > 0 and sz < 1 then
+                                local wid = ('##dclbl_%d_%s_%s'):format(
+                                    k.killed_at or 0, k.name or '', suffix)
+                                imgui.SetNextWindowPos({ sx + 6, sy - 8 })
+                                if imgui.Begin(wid, true, FLAGS) then
+                                    imgui.TextColored({ rgb[1], rgb[2], rgb[3], 1.0 }, text)
+                                end
+                                imgui.End()
                             end
-                            imgui.End()
+                        end
+
+                        local base = (eta <= 0)
+                            and ('%s  READY'):format(k.name)
+                            or  ('%s  %s'):format(k.name, fmt_eta(math.floor(eta)))
+
+                        if config.arc_label_debug then
+                            -- Six candidate axis arrangements. Whichever
+                            -- sits ON the grave is the correct convention.
+                            paint('A', k.x,  k.y,  k.z,  'A ' .. base)  -- raw
+                            paint('B', k.x,  k.z,  k.y,  'B ' .. base)  -- current swap
+                            paint('C', -k.x, k.z,  k.y,  'C ' .. base)
+                            paint('D', k.x,  k.z, -k.y,  'D ' .. base)
+                            paint('E', k.y,  k.z,  k.x,  'E ' .. base)
+                            paint('F', k.x,  k.y, -k.z,  'F ' .. base)
+                        else
+                            -- See axis-swap note above for why y/z swap.
+                            paint('', k.x, k.z, k.y, base)
                         end
                     end)
                     if not ok and err ~= last_label_err then
@@ -1133,6 +1146,10 @@ local function handle(args, raw, prefix_word_count)
         end
         save()
         say(('arcs visible above: %d%% elapsed'):format(config.arc_show_above_elapsed_pct))
+    elseif sub == 'labeldebug' then
+        config.arc_label_debug = not config.arc_label_debug
+        save()
+        say(('label debug: %s'):format(config.arc_label_debug and 'on' or 'off'))
     elseif sub == 'diag' then
         say(('drawArc=%s tl_helpers=%s d3d8dev=%s d3dC=%s'):format(
             tostring(drawArc ~= nil), tostring(tl_helpers ~= nil),
