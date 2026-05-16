@@ -2,8 +2,6 @@
 
 An [Ashita v4](https://www.ashitaxi.com/) addon for FFXI that tells you, at a glance, **when each mob you killed is about to repop and where its corpse landed**.
 
-Extracted from [huntpartner](https://github.com/TreeFidyDad/huntpartner) v0.7.93 so respawn tracking can be reloaded independently of the rest of huntpartner's surface area.
-
 > ⚠️ Respawn windows and entity behavior differ between servers — YMMV. Tune the defaults for your environment.
 
 ---
@@ -117,21 +115,8 @@ Everything below is editable from the **config** tab — no need to hand-edit XM
 
 ---
 
-## First-load migration
-
-If you previously ran the respawn feature inside `huntpartner` and have `addons/huntpartner/settings/settings.xml` on disk, deathclock will lift over `default_respawn`, `keep_dead_after_respawn`, `track_respawns`, `respawn_lines`, `respawn_lines_show_all`, and per-mob `overrides` on first load. Best-effort; sets a one-shot sentinel so it doesn't retry.
-
----
-
-## Why a separate addon
-
-huntpartner reloads frequently during development. A single Lua error in any of its features unloads the entire addon — taking respawn tracking down with it, mid-pull. Deathclock isolates the respawn surface so unrelated huntpartner work can't wipe your in-flight kill timers.
-
----
-
 ## Credits
 
-- Extracted from [huntpartner](https://github.com/TreeFidyDad/huntpartner) v0.7.93.
 - `vendor/targetlines/` (the `drawArc` machinery and `worldToScreen` helper) is vendored from the [`targetlines`](https://github.com/RolandJ/targetlines) addon — see `vendor/targetlines/NOTICE.md` for full attribution.
 - Built with [Claude](https://claude.ai) (as Watney) as a coding partner.
 
