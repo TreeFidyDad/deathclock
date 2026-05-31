@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.32'
+addon.version   = '0.3.33'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -1641,27 +1641,37 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                         -- height so the beacon scales with camera
                         -- distance (closer = taller pillar, like a real
                         -- physical object would).
-                        local ok = pcall(function()
+                        local ok, err = pcall(function()
                             local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
                             local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
-                            local sx_b, sy_b, sz_b = tl_helpers.worldToScreen(tx, ty, tz, view, proj)
-                            local sx_t, sy_t, sz_t = tl_helpers.worldToScreen(tx, ty + 8, tz, view, proj)
+                            -- Axis swap: FFXI entity coords are (x, depth,
+                            -- altitude) but worldToScreen wants the D3D
+                            -- convention (x, altitude, depth). Same swap
+                            -- the label block does at line 1713-1714.
+                            -- Without this, the beacon projects to garbage
+                            -- screen coords and silently renders nothing.
+                            local sx_b, sy_b, sz_b = tl_helpers.worldToScreen(tx, tz, ty, view, proj)
+                            local sx_t, sy_t, sz_t = tl_helpers.worldToScreen(tx, tz + 8, ty, view, proj)
                             if not (sx_b and sy_b and sz_b and sy_t) then return end
                             if sz_b <= 0 or sz_b >= 1 then return end
-                            -- Floor of 24px so distant beacons still
-                            -- catch the eye, ceiling of 240px so they
-                            -- don't dominate when you're standing on top.
                             local h = math.max(24, math.min(240, sy_b - sy_t))
                             local w = 4
-                            local FLAGS = 13135 -- same as label flags minus NoBackground (128)
+                            local FLAGS = 13135
                             imgui.SetNextWindowPos({ sx_b - w / 2, sy_b - h })
                             imgui.SetNextWindowSize({ w, h })
-                            imgui.PushStyleColor(ImGuiCol_WindowBg, { rgb[1], rgb[2], rgb[3], 0.75 })
+                            imgui.PushStyleColor(ImGuiCol_WindowBg, { rgb[1], rgb[2], rgb[3], 0.85 })
                             local wid = ('##dcbeacon_%d_%s'):format(k.killed_at or 0, k.name or '')
                             if imgui.Begin(wid, true, FLAGS) then end
                             imgui.End()
                             imgui.PopStyleColor()
                         end)
+                        if not ok and err then
+                            -- Surface beacon errors once so we don't debug blind
+                            if not _G.__dc_beacon_err_shown then
+                                _G.__dc_beacon_err_shown = true
+                                print('[deathclock] beacon error: ' .. tostring(err))
+                            end
+                        end
                     elseif config.arc_fx then
                         -- Tracer effect: progress cycles 0->1 so the arc
                         -- paints itself from player to spawn point with
