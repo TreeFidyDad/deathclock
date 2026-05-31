@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.28'
+addon.version   = '0.3.29'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -134,6 +134,14 @@ local default_settings = T{
     -- default; 1.5-2.0 reads comfortably from a normal viewing distance.
     -- Stored as a float and clamped to [0.5, 3.0] in the slider.
     arc_label_scale            = 1.0,
+    -- v0.3.29: animated tracer effect. When true, the arc paints itself from
+    -- player to spawn point on a loop with a glowing orb head, and pulses
+    -- alpha faster as eta drops. Pure cosmetic, all gated client-side; toggle
+    -- off via /dc arc-fx if it gets distracting in heavy pull rotations.
+    arc_fx                     = true,
+    -- Base sweep duration in seconds for the tracer. The actual sweep speeds
+    -- up linearly with urgency so imminent pops feel frantic.
+    arc_sweep_sec              = 1.6,
     -- When true, only mobs that were claimed by the player or someone in
     -- the player's party/alliance at time of death are tracked. Skips
     -- random mobs that someone else killed nearby (the noisy default of a
@@ -1619,7 +1627,38 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                 -- are guaranteed non-nil whenever k.x/y/z were.
                 local tx, ty, tz = k.spawn_x or k.x, k.spawn_y or k.y, k.spawn_z or k.z
                 if show_arc then
-                    drawArc(px, py, pz, tx, ty, tz, rgb_to_argb(rgb), 1)
+                    if config.arc_fx then
+                        -- Tracer effect: progress cycles 0->1 so the arc
+                        -- paints itself from player to spawn point with
+                        -- the orb sprite riding the leading edge.
+                        -- Sweep duration and pulse rate both ramp with
+                        -- urgency (eta closing -> faster sweep, faster
+                        -- pulse, higher floor alpha).
+                        local urgency
+                        if eta <= 0 then
+                            urgency = 1.0
+                        elseif total > 0 then
+                            urgency = math.max(0, math.min(1, 1 - eta / total))
+                        else
+                            urgency = 0
+                        end
+                        local base_sweep = config.arc_sweep_sec or 1.6
+                        -- 1.6s sweep when fresh, 0.55s when ready.
+                        local sweep = base_sweep - urgency * (base_sweep - 0.55)
+                        local clk = os.clock()
+                        local progress = (clk % sweep) / sweep
+                        -- Pulse Hz: 0.6 fresh -> 3.0 ready.
+                        local pulse_hz = 0.6 + urgency * 2.4
+                        local pulse = 0.5 + 0.5 * math.sin(clk * pulse_hz * 2 * math.pi)
+                        -- Floor alpha lifts as urgency rises so faded
+                        -- arcs don't disappear at pop time.
+                        local floor_a = 0.45 + urgency * 0.30
+                        local swing = 1.0 - floor_a
+                        local alpha = math.floor(math.min(1.0, floor_a + swing * pulse) * 255 + 0.5)
+                        drawArc(px, py, pz, tx, ty, tz, rgb_to_argb(rgb, alpha), progress, true)
+                    else
+                        drawArc(px, py, pz, tx, ty, tz, rgb_to_argb(rgb), 1)
+                    end
                 end
                 -- Labels are independent of the arc threshold: the mob
                 -- name + eta floats over every active death spot the moment
@@ -1786,7 +1825,7 @@ local function help()
     say('/dc show | hide')
     say('/dc list | clear [Name] | add "Name" <s> | default <s>')
     say('/dc ignore [Name] | unignore [Name]')
-    say('/dc lines | mine | all | test')
+    say('/dc lines | mine | all | fx | test')
     say('/dc nm [list|reset <name>|forget <name>] -- NM counter')
     say('alias: /rt <subcmd>')
 end
@@ -2064,6 +2103,10 @@ local function handle(args, raw, prefix_word_count)
         config.respawn_lines = not config.respawn_lines
         save()
         say(('return arcs: %s'):format(config.respawn_lines and 'on' or 'off'))
+    elseif sub == 'arc-fx' or sub == 'arcfx' or sub == 'fx' then
+        config.arc_fx = not config.arc_fx
+        save()
+        say(('arc fx (tracer + pulse): %s'):format(config.arc_fx and 'on' or 'off'))
     elseif sub == 'mine' then
         config.only_my_kills = not config.only_my_kills
         save()
