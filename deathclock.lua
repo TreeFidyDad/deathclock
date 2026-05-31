@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.27'
+addon.version   = '0.3.28'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -301,6 +301,14 @@ local last_hpp = T{}
 -- often returns 0 (unclaimed) for a mob we actually killed. Carrying the
 -- previous frame's value preserves credit.
 local last_claim = T{}
+-- Engage-position snapshot per mob server_id. Captured the first frame
+-- claim transitions from 0/nil to a real claimer (us or alliance). That
+-- frame's mob (x,y,z) is the best proxy we have for the spawn point --
+-- mobs wander only a short distance pre-aggro, and the death position
+-- can be hundreds of yalms off after a kite. Keyed by server_id (stable
+-- per spawn slot) so it survives the mob despawning and re-popping.
+-- Cleared on death after the kill record is built.
+local engage_pos = {}
 local last_scan = 0
 -- Session-only ignore set, keyed by lowercase name. Deliberately not
 -- persisted: "I don't care about Svana Rarab right now" is almost always
@@ -375,7 +383,7 @@ local function get_respawn_window(name)
     return config.overrides[name] or config.default_respawn
 end
 
-local function record_kill(name, server_id, x, y, z)
+local function record_kill(name, server_id, x, y, z, spawn_x, spawn_y, spawn_z)
     if is_ignored(name) then return end
     -- Capture spawn-slot observation BEFORE any early returns. We want
     -- slot data for NMs too -- that's literally the point (knowing a slot
@@ -415,6 +423,13 @@ local function record_kill(name, server_id, x, y, z)
         x          = x,
         y          = y,
         z          = z,
+        -- Engage-time mob position. Falls back to death position when no
+        -- engage snapshot was captured (mob was already claimed when we
+        -- first saw it, /dc test entries, etc.) so legacy arc/label code
+        -- never sees nil here.
+        spawn_x    = spawn_x or x,
+        spawn_y    = spawn_y or y,
+        spawn_z    = spawn_z or z,
         server_id  = server_id,
     })
     -- PH detection: if this slot has previously hosted a known NM (and the
@@ -622,6 +637,27 @@ local function scan_for_deaths()
                 local cs = entities:GetClaimStatus(i)
                 if cs then cur_claim = bit.band(cs, 0xFFFF) end
             end)
+            -- Engage snapshot: first frame this entity's claim goes from
+            -- 0/nil to a real claimer (us or someone in alliance), grab
+            -- the mob's current position and stash it by server_id. This
+            -- is the closest proxy we have for the spawn point -- mobs
+            -- rarely wander far before being claimed, and once they're
+            -- claimed they may get kited a long way before they die.
+            local prev_claim = last_claim[i]
+            if (not prev_claim or prev_claim == 0)
+               and cur_claim and cur_claim ~= 0
+               and claim_is_mine(cur_claim) then
+                local esid, ex, ey, ez
+                pcall(function()
+                    esid = entities:GetServerId(i)
+                    ex   = entities:GetLocalPositionX(i)
+                    ey   = entities:GetLocalPositionY(i)
+                    ez   = entities:GetLocalPositionZ(i)
+                end)
+                if esid and esid ~= 0 and ex and ey and ez then
+                    engage_pos[esid] = { x = ex, y = ey, z = ez }
+                end
+            end
             if prev and prev > 0 and hpp == 0 then
                 -- Credit check: prefer prev-frame claim (often cleared on
                 -- the death frame itself). Fall back to current claim if
@@ -637,7 +673,12 @@ local function scan_for_deaths()
                         z = entities:GetLocalPositionZ(i)
                         sid = entities:GetServerId(i)
                     end)
-                    record_kill(name, sid, x, y, z)
+                    local ep = sid and engage_pos[sid]
+                    local sx, sy, sz
+                    if ep then sx, sy, sz = ep.x, ep.y, ep.z end
+                    record_kill(name, sid, x, y, z, sx, sy, sz)
+                    -- Clear so the next pop in this slot starts fresh.
+                    if sid then engage_pos[sid] = nil end
                 else
                     last_filter_skip = ('%s claim=0x%x'):format(name, credit_claim)
                 end
@@ -678,7 +719,9 @@ local function build_respawn_rows()
         end
         table.insert(rows, {
             label = label, name = k.name, respawn_at = k.respawn_at, zone = k.zone,
-            x = k.x, y = k.y, z = k.z, server_id = k.server_id,
+            x = k.x, y = k.y, z = k.z,
+            spawn_x = k.spawn_x, spawn_y = k.spawn_y, spawn_z = k.spawn_z,
+            server_id = k.server_id,
         })
     end
     table.sort(rows, function(a, b) return a.respawn_at < b.respawn_at end)
@@ -1570,8 +1613,13 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                 local show_arc  = eta <= 0
                                   or config.arc_always_on
                                   or pct_elapsed >= thr_pct
+                -- Prefer the engage-time position (spawn-point proxy) over
+                -- the corpse position. record_kill always falls back to
+                -- (x,y,z) when no engage snapshot was captured, so these
+                -- are guaranteed non-nil whenever k.x/y/z were.
+                local tx, ty, tz = k.spawn_x or k.x, k.spawn_y or k.y, k.spawn_z or k.z
                 if show_arc then
-                    drawArc(px, py, pz, k.x, k.y, k.z, rgb_to_argb(rgb), 1)
+                    drawArc(px, py, pz, tx, ty, tz, rgb_to_argb(rgb), 1)
                 end
                 -- Labels are independent of the arc threshold: the mob
                 -- name + eta floats over every active death spot the moment
@@ -1600,7 +1648,7 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                         -- in the same way drawArc.lua does at line 60-61.
                         local zoom = (2.8 - proj._11) * 0.47619047619
                         local P0x, P0y, P0z = px,  pz,  py
-                        local P2x, P2y, P2z = k.x, k.z, k.y
+                        local P2x, P2y, P2z = tx, tz, ty
                         local P1x = (P0x + P2x) / 2
                         local P1y = (P0y + P2y) / 2 - 2 - 2 * zoom
                         local P1z = (P0z + P2z) / 2
