@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.29'
+addon.version   = '0.3.30'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -1631,9 +1631,9 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                         -- Tracer effect: progress cycles 0->1 so the arc
                         -- paints itself from player to spawn point with
                         -- the orb sprite riding the leading edge.
-                        -- Sweep duration and pulse rate both ramp with
-                        -- urgency (eta closing -> faster sweep, faster
-                        -- pulse, higher floor alpha).
+                        -- Sweep speeds up with urgency. Pulse is GATED
+                        -- by urgency -- flat alpha early in the window,
+                        -- fades in past 50% elapsed, full at pop.
                         local urgency
                         if eta <= 0 then
                             urgency = 1.0
@@ -1643,18 +1643,22 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                             urgency = 0
                         end
                         local base_sweep = config.arc_sweep_sec or 1.6
-                        -- 1.6s sweep when fresh, 0.55s when ready.
                         local sweep = base_sweep - urgency * (base_sweep - 0.55)
                         local clk = os.clock()
                         local progress = (clk % sweep) / sweep
-                        -- Pulse Hz: 0.6 fresh -> 3.0 ready.
-                        local pulse_hz = 0.6 + urgency * 2.4
-                        local pulse = 0.5 + 0.5 * math.sin(clk * pulse_hz * 2 * math.pi)
-                        -- Floor alpha lifts as urgency rises so faded
-                        -- arcs don't disappear at pop time.
-                        local floor_a = 0.45 + urgency * 0.30
-                        local swing = 1.0 - floor_a
-                        local alpha = math.floor(math.min(1.0, floor_a + swing * pulse) * 255 + 0.5)
+                        -- Pulse amplitude: 0 below 0.5 urgency, ramp to
+                        -- 1.0 at urgency 1.0. So fresh kills sit at a
+                        -- steady alpha and only start breathing past the
+                        -- midpoint of their respawn window.
+                        local pulse_amp = math.max(0, (urgency - 0.5) * 2)
+                        local pulse_hz = 1.0 + urgency * 2.0
+                        local pulse = math.sin(clk * pulse_hz * 2 * math.pi)
+                        -- Steady baseline alpha climbs gently with
+                        -- urgency so faded arcs don't disappear at pop.
+                        local steady = 0.55 + urgency * 0.20
+                        local alpha_f = steady + pulse_amp * pulse * 0.25
+                        alpha_f = math.max(0.30, math.min(1.0, alpha_f))
+                        local alpha = math.floor(alpha_f * 255 + 0.5)
                         drawArc(px, py, pz, tx, ty, tz, rgb_to_argb(rgb, alpha), progress, true)
                     else
                         drawArc(px, py, pz, tx, ty, tz, rgb_to_argb(rgb), 1)
