@@ -1,6 +1,6 @@
 addon.name      = 'deathclock'
 addon.author    = 'Blake & Watney'
-addon.version   = '0.3.31'
+addon.version   = '0.3.32'
 addon.desc      = 'FFXI respawn timers: tracks mob deaths, predicts pops, draws return-arcs to the kill spot.'
 addon.commands  = { '/dc', '/rt' }
 
@@ -142,6 +142,12 @@ local default_settings = T{
     -- Base sweep duration in seconds for the tracer. The actual sweep speeds
     -- up linearly with urgency so imminent pops feel frantic.
     arc_sweep_sec              = 1.6,
+    -- v0.3.32: alternate marker style. When true, each tracked spawn point
+    -- gets a thin vertical "beacon" pillar in the urgency color INSTEAD of
+    -- a player->spawn arc. Reads as a map marker, not a line attached to
+    -- you. Toggle via /dc beacon. Default off so existing users see no
+    -- change; pure opt-in cosmetic alternative.
+    arc_beacon                 = false,
     -- When true, only mobs that were claimed by the player or someone in
     -- the player's party/alliance at time of death are tracked. Skips
     -- random mobs that someone else killed nearby (the noisy default of a
@@ -1627,7 +1633,36 @@ ashita.events.register('d3d_present', 'dc_return_arcs_cb', function()
                 -- are guaranteed non-nil whenever k.x/y/z were.
                 local tx, ty, tz = k.spawn_x or k.x, k.spawn_y or k.y, k.spawn_z or k.z
                 if show_arc then
-                    if config.arc_fx then
+                    if config.arc_beacon and tl_helpers and d3d8dev and d3dC then
+                        -- Beacon mode: render a thin vertical colored
+                        -- pillar at the spawn point in lieu of a curve.
+                        -- World-project the ground point and a point 8u
+                        -- above; the screen-space delta gives the pixel
+                        -- height so the beacon scales with camera
+                        -- distance (closer = taller pillar, like a real
+                        -- physical object would).
+                        local ok = pcall(function()
+                            local _, view = d3d8dev:GetTransform(d3dC.D3DTS_VIEW)
+                            local _, proj = d3d8dev:GetTransform(d3dC.D3DTS_PROJECTION)
+                            local sx_b, sy_b, sz_b = tl_helpers.worldToScreen(tx, ty, tz, view, proj)
+                            local sx_t, sy_t, sz_t = tl_helpers.worldToScreen(tx, ty + 8, tz, view, proj)
+                            if not (sx_b and sy_b and sz_b and sy_t) then return end
+                            if sz_b <= 0 or sz_b >= 1 then return end
+                            -- Floor of 24px so distant beacons still
+                            -- catch the eye, ceiling of 240px so they
+                            -- don't dominate when you're standing on top.
+                            local h = math.max(24, math.min(240, sy_b - sy_t))
+                            local w = 4
+                            local FLAGS = 13135 -- same as label flags minus NoBackground (128)
+                            imgui.SetNextWindowPos({ sx_b - w / 2, sy_b - h })
+                            imgui.SetNextWindowSize({ w, h })
+                            imgui.PushStyleColor(ImGuiCol_WindowBg, { rgb[1], rgb[2], rgb[3], 0.75 })
+                            local wid = ('##dcbeacon_%d_%s'):format(k.killed_at or 0, k.name or '')
+                            if imgui.Begin(wid, true, FLAGS) then end
+                            imgui.End()
+                            imgui.PopStyleColor()
+                        end)
+                    elseif config.arc_fx then
                         -- Tracer effect: progress cycles 0->1 so the arc
                         -- paints itself from player to spawn point with
                         -- the orb sprite riding the leading edge. Sweep
@@ -1814,7 +1849,7 @@ local function help()
     say('/dc show | hide')
     say('/dc list | clear [Name] | add "Name" <s> | default <s>')
     say('/dc ignore [Name] | unignore [Name]')
-    say('/dc lines | mine | all | fx | test')
+    say('/dc lines | mine | all | fx | beacon | test')
     say('/dc nm [list|reset <name>|forget <name>] -- NM counter')
     say('alias: /rt <subcmd>')
 end
@@ -2096,6 +2131,10 @@ local function handle(args, raw, prefix_word_count)
         config.arc_fx = not config.arc_fx
         save()
         say(('arc fx (tracer + pulse): %s'):format(config.arc_fx and 'on' or 'off'))
+    elseif sub == 'beacon' then
+        config.arc_beacon = not config.arc_beacon
+        save()
+        say(('beacon mode: %s'):format(config.arc_beacon and 'on (pillar at spawn, no arc)' or 'off'))
     elseif sub == 'mine' then
         config.only_my_kills = not config.only_my_kills
         save()
